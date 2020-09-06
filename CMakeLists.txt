@@ -13,6 +13,7 @@ if (WIN32)
 	add_executable(PathTracer WIN32
 		Source/PathTracer.cpp
 	)
+	target_sources(PathTracer PRIVATE ${CMAKE_SOURCE_DIR}/JovianGraphics/Io/WindowsHiDPI.manifest)
 else()
 	add_executable(PathTracer
 		Source/PathTracer.cpp

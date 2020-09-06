@@ -179,7 +179,7 @@ void main() {
                 if (!traceRay(rLight, isectDirectLighting, true))
                 {
                     vec3 posDiff = lightPos - hitPos;
-                    float falloff = 1.0 / (1.0 + dot(posDiff, posDiff)) * abs(dot(isect.n, lightDir));
+                    float falloff = 1.0 / (1.0 + dot(posDiff, posDiff)) * max(0.0, dot(isect.n, lightDir));
                     stack[depth].wIn += falloff * isect.c * lightRadiance;
                 }
             }
