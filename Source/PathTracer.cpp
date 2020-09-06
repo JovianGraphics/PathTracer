@@ -33,7 +33,7 @@ struct ShaderConstants {
 std::vector<Vertex> vertices;
 std::vector<uint16> indices;
 std::vector<glm::vec3> lights = {
-	glm::vec3(0.0, 0.0, 0.5), glm::vec3(1.0, 1.0, 1.0),
+	glm::vec3(0.0, 0.7, 0.0), glm::vec3(1.0, 1.0, 1.0),
 };
 
 class TestApp
@@ -277,7 +277,7 @@ public:
 		auto constantsHandle = amalthea->m_streamingBuffer->AllocateTransient(m_constantsSize);
 		ShaderConstants* constants = constantsHandle.Map<ShaderConstants>();
 
-		constants->viewMtx = glm::lookAt(glm::vec3(cos(m_orbitAngle) * m_orbitRadius, m_orbitHeight, sin(m_orbitAngle) * m_orbitRadius), glm::vec3(0.0, 0.0, 0.0), glm::vec3(0.0, 1.0, 0.0));
+		constants->viewMtx = glm::lookAt(glm::vec3(cos(m_orbitAngle) * m_orbitRadius, m_orbitHeight, sin(m_orbitAngle) * m_orbitRadius), glm::vec3(0.0, 0.5, 0.0), glm::vec3(0.0, 1.0, 0.0));
 		constants->projMtx = glm::perspective(glm::radians(60.0f), float(amalthea->m_windowSize.x) / (amalthea->m_windowSize.y), 0.01f, 256.0f);
 
 		constants->projMtx[1].y = -constants->projMtx[1].y;
