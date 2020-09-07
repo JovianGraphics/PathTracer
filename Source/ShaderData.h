@@ -1,0 +1,32 @@
+#pragma once
+
+#include <Ganymede/Source/Ganymede.h>
+
+#include <glm/glm.hpp>
+#include <glm/gtx/transform.hpp>
+#include <glm/gtc/type_precision.hpp>
+
+struct VertexAux
+{
+	glm::vec3 normal;
+	glm::u8vec4 color;
+};
+
+struct ShaderConstants {
+	glm::mat4 viewMtx;
+	glm::mat4 projMtx;
+	glm::mat4 viewInvMtx;
+	glm::mat4 projInvMtx;
+	glm::vec2 viewportSize;
+	uint32 numLights;
+	uint32 numTriangles;
+	uint32 frameIndex;
+	uint32 numRays;
+	uint32 numBVHNodes;
+};
+
+struct Light
+{
+	alignas(16) glm::vec3 pos;
+	alignas(16) glm::vec3 radiance;
+};

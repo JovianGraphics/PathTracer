@@ -36,9 +36,41 @@ add_custom_command(
 	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/trace.vert
 )
 
+add_custom_command(
+	OUTPUT visualize.frag.h
+	PRE_BUILD
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/visualize.frag output=${CMAKE_BINARY_DIR}/generated/visualize.frag.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/visualize.frag
+)
+
+add_custom_command(
+	OUTPUT visualize.vert.h
+	PRE_BUILD
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/visualize.vert output=${CMAKE_BINARY_DIR}/generated/visualize.vert.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/visualize.vert
+)
+
+add_custom_command(
+	OUTPUT gbuffers.frag.h
+	PRE_BUILD
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/gbuffers.frag output=${CMAKE_BINARY_DIR}/generated/gbuffers.frag.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/gbuffers.frag
+)
+
+add_custom_command(
+	OUTPUT gbuffers.vert.h
+	PRE_BUILD
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/gbuffers.vert output=${CMAKE_BINARY_DIR}/generated/gbuffers.vert.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/gbuffers.vert
+)
+
 add_custom_target(Shaders ALL DEPENDS
 	trace.frag.h
 	trace.vert.h
+	visualize.frag.h
+	visualize.vert.h
+	gbuffers.frag.h
+	gbuffers.vert.h
 )
 
 add_dependencies(PathTracer Shaders)

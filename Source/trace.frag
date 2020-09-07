@@ -75,6 +75,10 @@ layout(location = 0) in vec2 screenUV;
 
 layout(location = 0) out vec4 outColor;
 
+layout (input_attachment_index = 0, set = 0, binding = 9) uniform subpassInput inputPos;
+layout (input_attachment_index = 1, set = 0, binding = 10) uniform subpassInput inputNormals;
+layout (input_attachment_index = 2, set = 0, binding = 11) uniform subpassInput inputAlbedo;
+
 #include "noise.glsl"
 
 struct Ray
@@ -242,29 +246,6 @@ bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
     }
 
     return hit;
-
-    while (stackSize > 0)
-    {
-        uint index = stack[stackSize - 1];
-        stackSize -= 1;
-
-        if (bvh[index].left != bvh[index].right)
-        {
-            // Not a leaf
-            stack[stackSize] = uint(bvh[index].left);
-            stack[stackSize + 1] = uint(bvh[index].right);
-            stackSize += 2;
-        }
-        else
-        {
-            // Leaf node
-            hit = traceRayTriangles(r, bvh[index].startPrim, bvh[index].endPrim, isect, stopIfHit) || hit;
-        }
-
-        if (hit && stopIfHit) return true;
-    }
-
-    return hit;
 }
 
 f16vec3 reinhard(f16vec3 v)
@@ -283,127 +264,134 @@ struct RayStack
 
 const int maxDepth = 5;
 
+bool shadeHit(int jitter, int depth, uint n, vec3 hitPos, inout Intersection isect, inout Ray r, inout RayStack stack, in bool isLastHitDelta)
+{
+    stack.hitPos = hitPos;
+    stack.hitNormal = isect.n;
+    stack.hitAlbedo = isect.c;
+
+    // Direct Lighting
+    for (int i = 0; i < numLights; i++)
+    {
+        vec3 lightPos = lights[i].pos.xyz;
+
+        vec3 posDiff = lightPos - hitPos;
+        float dist = length(posDiff);
+        vec3 lightDir = posDiff / dist;
+                    
+        Intersection isectDirectLighting;
+        Ray rLight;
+
+        rLight.o = hitPos;
+        rLight.d = lightDir;
+        rLight.rcpD = 1.0 / rLight.d;
+        rLight.min_t = 0.00005;
+        rLight.max_t = dist - 0.00005;
+
+        if (!traceRay(rLight, isectDirectLighting, true))
+        {
+            f16vec3 lightRadiance = f16vec3(lights[i].radiance.rgb);
+    
+            float16_t falloff = float16_t(1.0f / (dist * dist + 1.0f)) * max(0.0hf, dot(isect.n, f16vec3(lightDir)));
+
+            // For delta material, this is kind of a hack (introduce a small bias), but point light source doesn't exist anyways ...
+            if (isect.c.a > 0.5)
+                stack.wIn += falloff * isect.c.rgb * lightRadiance;
+            else
+                stack.wIn += float16_t(dot(lightDir, r.d) > 0.995) * lightRadiance;
+        }
+    }
+
+    // Secondary Contribution
+    f16vec2 gridSample = WeylNth(int(jitter * numRays + n + depth));
+    vec3 nextDir = vec3(to_coord_space(isect.n, cosineHemisphere(gridSample)));
+
+    if (isect.c.a < 0.5)
+    {
+        float16_t ior = 1.3hf;
+        if (depth > 0 && isLastHitDelta) ior = 1.0hf / 1.3hf;
+
+        nextDir = vec3(refract(f16vec3(r.d), isect.n, ior));
+
+        if (nextDir == vec3(0.0)) nextDir = vec3(reflect(f16vec3(r.d), isect.n));
+
+        // Prevent double counting the transmittance
+        stack.hitAlbedo = sqrt(stack.hitAlbedo);
+    }
+    else if (depth > 0)
+    {
+        stack.hitAlbedo /= 0.7hf;
+        if (float(jitter) / 65536.0 > 0.7) return true;
+    }
+
+    stack.nextDir = nextDir;
+
+    r.o = hitPos;
+    r.d = nextDir;
+    r.rcpD = 1.0 / r.d;
+    r.min_t = 0.00005;
+    r.max_t = 10000.0;
+
+    return false;
+}
+
 void main() {
     int jitter = (blueNoise[(uint(gl_FragCoord.x) & 0xFF) + ((uint(gl_FragCoord.y) & 0xFF) << 8)] * 256 + blueNoise[frameIndex]) & 0xFFFF;
-
-    vec4 projPos = vec4(screenUV + (WeylNth(jitter) * 2.0 - 1.0) / viewportSize, 1.0, 1.0);
-    vec4 viewPos = projInvMtx * projPos; viewPos /= viewPos.w;
-    vec3 worldDir = normalize((viewInvMtx * viewPos).xyz);
 
     vec4 camPos = viewInvMtx * vec4(0.0, 0.0, 0.0, 1.0); camPos /= camPos.w;
 
     vec3 accumulation = vec3(0.0);
+
+    vec4 gbuffersPos = subpassLoad(inputPos);
+    f16vec3 gbufferNormal = f16vec3(subpassLoad(inputNormals).rgb);
+    f16vec4 gbufferAlbedo = f16vec4(subpassLoad(inputAlbedo));
+    vec3 rayDir = gbuffersPos.xyz - camPos.xyz;
 
     for (uint n = 0; n < numRays; n++)
     {
         Intersection isect;
         Ray r;
 
-        RayStack stack[maxDepth];
-
         r.o = camPos.xyz;
-        r.d = worldDir;
+        r.d = normalize(rayDir);
         r.rcpD = 1.0 / r.d;
         r.min_t = 0.00005;
         r.max_t = 10000.0;
 
-        for (int i = 0; i < maxDepth; i++)
+        if (gbuffersPos.a > 0.0)
         {
-            stack[i].hitPos = vec3(0.0);
-            stack[i].nextDir = vec3(0.0);
-            stack[i].hitNormal = f16vec3(0.0);
-            stack[i].hitAlbedo = f16vec4(0.0);
-            stack[i].wIn = f16vec3(0.0);
-        }
+            RayStack stack[maxDepth];
 
-        for (int depth = 0; depth < maxDepth; depth++)
-        {
-            if (traceRay(r, isect, false))
+            for (int i = 0; i < maxDepth; i++)
             {
+                stack[i].hitPos = vec3(0.0);
+                stack[i].nextDir = vec3(0.0);
+                stack[i].hitNormal = f16vec3(0.0);
+                stack[i].hitAlbedo = f16vec4(0.0);
+                stack[i].wIn = f16vec3(0.0);
+            }
+            
+            shadeHit(jitter, 0, n, gbuffersPos.rgb, isect, r, stack[0], false);
+
+            for (int depth = 1; depth < maxDepth; depth++)
+            {
+                if (!traceRay(r, isect, false)) break;
+
                 vec3 hitPos = r.max_t * r.d + r.o;
 
-                stack[depth].hitPos = hitPos;
-                stack[depth].hitNormal = isect.n;
-                stack[depth].hitAlbedo = isect.c;
-
-                // Direct Lighting
-                for (int i = 0; i < numLights; i++)
-                {
-                    vec3 lightPos = lights[i].pos.xyz;
-
-                    vec3 lightDir = normalize(lightPos - hitPos);
-
-                    
-                    Intersection isectDirectLighting;
-                    Ray rLight;
-
-                    rLight.o = hitPos;
-                    rLight.d = lightDir;
-                    rLight.rcpD = 1.0 / rLight.d;
-                    rLight.min_t = 0.00005;
-                    rLight.max_t = distance(lightPos, hitPos) - 0.00005;
-
-                    if (!traceRay(rLight, isectDirectLighting, true))
-                    {
-                        f16vec3 lightRadiance = f16vec3(lights[i].radiance.rgb);
-    
-                        vec3 posDiff = lightPos - hitPos;
-                        float16_t falloff = 1.0hf / (1.0hf + float16_t(dot(posDiff, posDiff))) * max(0.0hf, dot(isect.n, f16vec3(lightDir)));
-
-                        // For delta material, this is kind of a hack (introduce a small bias), but point light source doesn't exist anyways ...
-                        if (isect.c.a > 0.5)
-                            stack[depth].wIn += falloff * isect.c.rgb * lightRadiance;
-                        else
-                            stack[depth].wIn += float16_t(dot(lightDir, r.d) > 0.995) * lightRadiance;
-                    }
-                }
-
-                // Secondary Contribution
-                f16vec2 gridSample = WeylNth(int(jitter * numRays + n + depth));
-                vec3 nextDir = vec3(to_coord_space(isect.n, cosineHemisphere(gridSample)));
-
-                if (isect.c.a < 0.5)
-                {
-                    float16_t ior = 1.3hf;
-                    if (depth > 0 && stack[depth - 1].hitAlbedo.a < 0.5) ior = 1.0hf / 1.3hf;
-
-                    nextDir = vec3(refract(f16vec3(r.d), isect.n, ior));
-
-                    if (nextDir == vec3(0.0)) nextDir = vec3(reflect(f16vec3(r.d), isect.n));
-
-                    // Prevent double counting the transmittance
-                    stack[depth].hitAlbedo = sqrt(stack[depth].hitAlbedo);
-                }
-                else if (depth > 0)
-                {
-                    if (float(jitter) / 65536.0 > 0.7) break;
-
-                    stack[depth].hitAlbedo /= 0.7hf;
-                }
-
-                stack[depth].nextDir = nextDir;
-
-                r.o = hitPos;
-                r.d = nextDir;
-                r.rcpD = 1.0 / r.d;
-                r.min_t = 0.00005;
-                r.max_t = 10000.0;
+                if (shadeHit(jitter, depth, n, hitPos, isect, r, stack[depth], stack[depth - 1].hitAlbedo.a < 0.5)) break;
             }
-            else
+
+            // Resolve
+            f16vec3 L = f16vec3(0.0);
+            for (int depth = maxDepth - 1; depth >= 0; depth--)
             {
-                break;
+                L += stack[depth].wIn;
+                L *= stack[depth].hitAlbedo.rgb; // hemisphere samples
             }
-        }
 
-        // Resolve
-        f16vec3 L = f16vec3(0.0);
-        for (int depth = maxDepth - 1; depth >= 0; depth--)
-        {
-            L += stack[depth].wIn;
-            L *= stack[depth].hitAlbedo.rgb; // hemisphere samples
+            accumulation += vec3(L);
         }
-
-        accumulation += vec3(L);
     }
 
     accumulation /= float(numRays);
