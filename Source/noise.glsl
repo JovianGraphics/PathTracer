@@ -35,17 +35,17 @@ float bayer_64x64(in vec2 pos, in vec2 view)
 	  return bayer64(pos * view);
 }
 
-vec2 WeylNth(int n)
+f16vec2 WeylNth(int n)
 {
-	  return fract(vec2(n * 12664745, n*9560333) / exp2(24.0));
+	  return f16vec2(fract(vec2(n * 12664745, n * 9560333) / exp2(24.0)));
 }
 
-vec3 cosineHemisphere(vec2 i)
+f16vec3 cosineHemisphere(f16vec2 i)
 {
-    float theta = 2.0 * 3.1415926 * i.y;
-    float sqrtPhi = sqrt(i.x);
+    float16_t theta = 2.0hf * 3.1415926hf * i.y;
+    float16_t sqrtPhi = sqrt(i.x);
 
-    return vec3(cos(theta) * sqrtPhi, sin(theta) * sqrtPhi, sqrt(1.0 - i.x));
+    return f16vec3(cos(theta) * sqrtPhi, sin(theta) * sqrtPhi, sqrt(1.0hf - i.x));
 }
 
 mat3 make_coord_space(vec3 n)
@@ -62,4 +62,20 @@ mat3 make_coord_space(vec3 n)
     vec3 x = normalize(cross(n, y));
 
     return mat3(x, y, n);
+}
+
+f16vec3 to_coord_space(f16vec3 n, f16vec3 r)
+{
+    f16vec3 h = n;
+    if (abs(h.x) <= abs(h.y) && abs(h.x) <= abs(h.z))
+        h.x = 1.0hf;
+    else if (abs(h.y) <= abs(h.x) && abs(h.y) <= abs(h.z))
+        h.y = 1.0hf;
+    else
+        h.z = 1.0hf;
+
+    f16vec3 y = normalize(cross(h, n));
+    f16vec3 x = normalize(cross(n, y));
+
+    return r.x * x + r.y * y + r.z * n;
 }

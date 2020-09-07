@@ -13,11 +13,14 @@
 #include <chrono>
 
 #include <glm/gtx/transform.hpp>
+#include <glm/gtc/type_precision.hpp>
+
+#include "blueNoise.h"
 
 struct Vertex
 {
-	alignas(16) glm::vec3 pos;
-	alignas(16) glm::vec3 color;
+	glm::vec3 pos;
+	glm::u8vec4 color;
 	alignas(16) glm::vec3 normal;
 };
 
@@ -26,8 +29,11 @@ struct ShaderConstants {
 	glm::mat4 projMtx;
 	glm::mat4 viewInvMtx;
 	glm::mat4 projInvMtx;
+	glm::vec2 viewportSize;
 	uint32 numLights;
 	uint32 numTriangles;
+	uint32 frameIndex;
+	uint32 numRays;
 };
 
 struct Light
@@ -39,7 +45,7 @@ struct Light
 std::vector<Vertex> vertices;
 std::vector<uint16> indices;
 std::vector<Light> lights = {
-	{ glm::vec3(0.0, 0.7, 0.0), glm::vec3(1.0, 1.0, 1.0) },
+	{ glm::vec3(0.0, 1.3, 0.0), glm::vec3(1.0, 1.0, 1.0) },
 };
 
 class TestApp
@@ -50,6 +56,7 @@ public:
 	EuropaBuffer::Ref m_vertexBuffer;
 	EuropaBuffer::Ref m_indexBuffer;
 	EuropaBuffer::Ref m_lightsBuffer;
+	EuropaBuffer::Ref m_blueNoiseBuffer;
 
 	EuropaImage::Ref m_depthImage;
 	EuropaImageView::Ref m_depthView;
@@ -63,6 +70,11 @@ public:
 	std::vector<EuropaDescriptorSet::Ref> m_descSets;
 	std::vector<EuropaFramebuffer::Ref> m_frameBuffers;
 
+	std::vector<EuropaImage::Ref> m_accumulationImages;
+	std::vector<EuropaImageView::Ref> m_accumulationImageViews;
+
+	uint32 m_frameIndex = 0;
+	int m_numRays = 1;
 	uint32 m_constantsSize;
 
 	float m_orbitHeight = 1.5;
@@ -82,11 +94,11 @@ public:
 
 		HimaliaVertexProperty vertexFormat[] = {
 			HimaliaVertexProperty::Position,
-			HimaliaVertexProperty::Color,
+			HimaliaVertexProperty::ColorRGBA8,
 			HimaliaVertexProperty::Normal
 		};
 		uint32 alignments[] = {
-			0, 16, 32
+			0, offsetof(Vertex, Vertex::color), offsetof(Vertex, Vertex::normal)
 		};
 		plyModel.mesh.BuildVertices<Vertex>(vertices, 3, vertexFormat, alignments);
 		plyModel.mesh.BuildIndices<uint16>(indices);
@@ -118,6 +130,17 @@ public:
 		m_lightsBuffer = amalthea->m_device->CreateBuffer(lightBufferInfo);
 
 		amalthea->m_transferUtil->UploadToBufferEx(m_lightsBuffer, lights.data(), uint32(lights.size()));
+
+		EuropaBufferInfo blueNoiseBufferInfo;
+		blueNoiseBufferInfo.exclusive = true;
+		blueNoiseBufferInfo.size = sizeof(_blueNoise);
+		blueNoiseBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
+		blueNoiseBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+		m_blueNoiseBuffer = amalthea->m_device->CreateBuffer(blueNoiseBufferInfo);
+
+		amalthea->m_transferUtil->UploadToBufferEx(m_blueNoiseBuffer, _blueNoise, sizeof(_blueNoise) / sizeof(uint16_t));
+
+		GanymedePrint sizeof(_blueNoise);
 
 		amalthea->m_ioSurface->SetKeyCallback([](uint8 keyAscii, uint16 keyV, std::string, IoKeyboardEvent ev)
 			{
@@ -154,6 +177,36 @@ public:
 
 		m_depthView = amalthea->m_device->CreateImageView(depthViewInfo);
 
+		// Create Accumulation buffer
+		m_accumulationImages.clear();
+		m_accumulationImageViews.clear();
+
+		for (int i = 0; i < amalthea->m_frames.size(); i++)
+		{
+			EuropaImageInfo info;
+			info.width = amalthea->m_windowSize.x;
+			info.height = amalthea->m_windowSize.y;
+			info.initialLayout = EuropaImageLayout::General;
+			info.type = EuropaImageType::Image2D;
+			info.format = EuropaImageFormat::RGBA32F;
+			info.usage = EuropaImageUsage(EuropaImageUsageStorage | EuropaImageUsageTransferSrc | EuropaImageUsageTransferDst);
+			info.memoryUsage = EuropaMemoryUsage::GpuOnly;
+
+			auto image = amalthea->m_device->CreateImage(info);
+			m_accumulationImages.push_back(image);
+
+			EuropaImageViewCreateInfo viewInfo;
+			viewInfo.format = EuropaImageFormat::RGBA32F;
+			viewInfo.image = image;
+			viewInfo.type = EuropaImageViewType::View2D;
+			viewInfo.minArrayLayer = 0;
+			viewInfo.minMipLevel = 0;
+			viewInfo.numArrayLayers = 1;
+			viewInfo.numMipLevels = 1;
+		
+			m_accumulationImageViews.push_back(amalthea->m_device->CreateImageView(viewInfo));
+		}
+
 		// Create Renderpass
 		m_mainRenderPass = amalthea->m_device->CreateRenderPassBuilder();
 		uint32 presentTarget = m_mainRenderPass->AddAttachment(EuropaAttachmentInfo{
@@ -189,6 +242,9 @@ public:
 		descLayout->Storage(1, 1, EuropaShaderStageAllGraphics);
 		descLayout->Storage(2, 1, EuropaShaderStageAllGraphics);
 		descLayout->Storage(3, 1, EuropaShaderStageAllGraphics);
+		descLayout->Storage(4, 1, EuropaShaderStageAllGraphics);
+		descLayout->ImageViewStorage(5, 1, EuropaShaderStageAllGraphics);
+		descLayout->ImageViewStorage(6, 1, EuropaShaderStageAllGraphics);
 		descLayout->Build();
 
 		m_pipelineLayout = amalthea->m_device->CreatePipelineLayout(EuropaPipelineLayoutInfo{ 1, 0, &descLayout });
@@ -239,8 +295,8 @@ public:
 		// Constants & Descriptor Pools / Sets
 		EuropaDescriptorPoolSizes descPoolSizes;
 		descPoolSizes.UniformDynamic = 1 * amalthea->m_frames.size();
-		descPoolSizes.UniformTexel = 3 * amalthea->m_frames.size();
-		descPoolSizes.Storage = 3 * amalthea->m_frames.size();
+		descPoolSizes.StorageTexel = 2 * amalthea->m_frames.size();
+		descPoolSizes.Storage = 4 * amalthea->m_frames.size();
 
 		m_descPool = amalthea->m_device->CreateDescriptorPool(descPoolSizes, uint32(amalthea->m_frames.size()));
 
@@ -260,20 +316,43 @@ public:
 
 	AmaltheaBehaviors::OnRender f_onRender = [&](Amalthea* amalthea, AmaltheaFrame& ctx, float time, float deltaTime)
 	{
+		bool clear = false;
+
 		if (amalthea->m_ioSurface->IsKeyDown('W'))
+		{
 			m_orbitHeight += deltaTime * 0.5f;
+			clear = true;
+		}
+
 		if (amalthea->m_ioSurface->IsKeyDown('S'))
+		{
 			m_orbitHeight -= deltaTime * 0.5f;
+			clear = true;
+		}
 
 		if (amalthea->m_ioSurface->IsKeyDown('E'))
+		{
 			m_orbitRadius += deltaTime;
+			clear = true;
+		}
+		
 		if (amalthea->m_ioSurface->IsKeyDown('Q'))
+		{
 			m_orbitRadius -= deltaTime;
+			clear = true;
+		}
 
 		if (amalthea->m_ioSurface->IsKeyDown('A'))
+		{
 			m_orbitAngle += deltaTime * 3.1415926f * 0.5;
+			clear = true;
+		}
+	
 		if (amalthea->m_ioSurface->IsKeyDown('D'))
+		{
 			m_orbitAngle -= deltaTime * 3.1415926f * 0.5;
+			clear = true;
+		}
 
 		auto constantsHandle = amalthea->m_streamingBuffer->AllocateTransient(m_constantsSize);
 		ShaderConstants* constants = constantsHandle.Map<ShaderConstants>();
@@ -286,8 +365,13 @@ public:
 		constants->viewInvMtx = glm::inverse(constants->viewMtx);
 		constants->projInvMtx = glm::inverse(constants->projMtx);
 
+		constants->viewportSize = glm::vec2(amalthea->m_windowSize);
+
 		constants->numLights = lights.size();
 		constants->numTriangles = indices.size() / 3;
+		constants->frameIndex = m_frameIndex++;
+		constants->numRays = m_numRays;
+		m_frameIndex = m_frameIndex & 0xFFFF;
 
 		constantsHandle.Unmap();
 
@@ -295,6 +379,9 @@ public:
 		m_descSets[ctx.frameIndex]->SetStorage(m_lightsBuffer, 0, uint32(lights.size() * sizeof(Light)), 1, 0);
 		m_descSets[ctx.frameIndex]->SetStorage(m_vertexBuffer, 0, uint32(vertices.size() * sizeof(Vertex)), 2, 0);
 		m_descSets[ctx.frameIndex]->SetStorage(m_indexBuffer, 0, uint32(indices.size() * sizeof(uint16)), 3, 0);
+		m_descSets[ctx.frameIndex]->SetStorage(m_blueNoiseBuffer, 0, sizeof(_blueNoise), 4, 0);
+		m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[(ctx.frameIndex - 1) % amalthea->m_frames.size()], EuropaImageLayout::General, 5, 0);
+		m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[ctx.frameIndex], EuropaImageLayout::General, 6, 0);
 
 		EuropaClearValue clearValue[2];
 		clearValue[0].color = glm::vec4(0.0, 0.0, 0.0, 1.0);
@@ -316,6 +403,11 @@ public:
 			ImGui::LabelText("", "CPU: %f ms", deltaTime * 1000.0);
 			ImGui::LabelText("", "FPS: %f", m_fps);
 
+
+			ImGui::SliderInt("", &m_numRays, 1, 128, "%d Rays Per Frame");
+			ImGui::SameLine();
+			if (ImGui::Button("Reset Image")) clear = true;
+
 			ImPlot::SetNextPlotLimitsX(time - 5.0, time, ImGuiCond_Always);
 			ImPlot::SetNextPlotLimitsY(0.0, 40.0, ImGuiCond_Once, 0);
 			ImPlot::SetNextPlotLimitsY(0.0, 160.0, ImGuiCond_Once, 1);
@@ -330,6 +422,14 @@ public:
 			}
 		}
 		ImGui::End();
+
+		if (clear)
+		{
+			for (auto i : m_accumulationImages)
+			{
+				ctx.cmdlist->ClearImage(i, EuropaImageLayout::General, glm::vec4(0.0));
+			}
+		}
 	};
 
 	~TestApp()
@@ -351,24 +451,7 @@ public:
 
 int AppMain(IoSurface::Ref s)
 {
-	// Test ECS
 	GanymedeECS ecs;
-
-	uint32 ev0 = ecs.RegisterEvent();
-	uint32 ev1 = ecs.RegisterEvent();
-
-	std::function<void()> f0 = []() { GanymedePrint "hahaha"; };
-	std::function<void(int)> f1 = [](int v) { GanymedePrint "A signaled with", v; };
-	std::function<void(int)> f2 = [&](int v) { GanymedePrint "B signaled with", v, & ecs; };
-	std::function<void(int)> f3 = [](int v) { GanymedePrint "C signaled with", v; };
-
-	ecs.RegisterHandler(ev0, &f0);
-	ecs.RegisterHandler(ev1, &f1);
-	ecs.RegisterHandler(ev1, &f2);
-	ecs.RegisterHandler(ev1, &f3);
-
-	ecs.Signal(ev0);
-	ecs.Signal(ev1, 40);
 
 	// Create Europa Instance
 	Europa& europa = EuropaVk();

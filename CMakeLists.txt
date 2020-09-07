@@ -44,6 +44,6 @@ add_dependencies(PathTracer Shaders)
 set_property(TARGET PathTracer PROPERTY CXX_STANDARD 17)
 
 target_link_libraries(PathTracer PUBLIC Amalthea Io Europa Himalia Ganymede)
-target_include_directories(PathTracer PUBLIC ${JovianIncludeDir})
+target_include_directories(PathTracer PUBLIC ${JovianIncludeDir} Source)
 
 include_directories(Source)
