@@ -327,31 +327,34 @@ void main() {
                 stack[depth].hitAlbedo = isect.c;
 
                 // Direct Lighting
-                if (isect.c.a > 0.5)
+                for (int i = 0; i < numLights; i++)
                 {
-                    for (int i = 0; i < numLights; i++)
+                    vec3 lightPos = lights[i].pos.xyz;
+
+                    vec3 lightDir = normalize(lightPos - hitPos);
+
+                    
+                    Intersection isectDirectLighting;
+                    Ray rLight;
+
+                    rLight.o = hitPos;
+                    rLight.d = lightDir;
+                    rLight.rcpD = 1.0 / rLight.d;
+                    rLight.min_t = 0.00005;
+                    rLight.max_t = distance(lightPos, hitPos) - 0.00005;
+
+                    if (!traceRay(rLight, isectDirectLighting, true))
                     {
-                        vec3 lightPos = lights[i].pos.xyz;
-
-                        vec3 lightDir = normalize(lightPos - hitPos);
-
-                        Intersection isectDirectLighting;
-                        Ray rLight;
-
-                        rLight.o = hitPos;
-                        rLight.d = lightDir;
-                        rLight.rcpD = 1.0 / rLight.d;
-                        rLight.min_t = 0.00005;
-                        rLight.max_t = distance(lightPos, hitPos) - 0.00005;
-
-                        if (!traceRay(rLight, isectDirectLighting, true))
-                        {
-                            f16vec3 lightRadiance = f16vec3(lights[i].radiance.rgb);
+                        f16vec3 lightRadiance = f16vec3(lights[i].radiance.rgb);
     
-                            vec3 posDiff = lightPos - hitPos;
-                            float16_t falloff = 1.0hf / (1.0hf + float16_t(dot(posDiff, posDiff))) * max(0.0hf, dot(isect.n, f16vec3(lightDir)));
+                        vec3 posDiff = lightPos - hitPos;
+                        float16_t falloff = 1.0hf / (1.0hf + float16_t(dot(posDiff, posDiff))) * max(0.0hf, dot(isect.n, f16vec3(lightDir)));
+
+                        // For delta material, this is kind of a hack (introduce a small bias), but point light source doesn't exist anyways ...
+                        if (isect.c.a > 0.5)
                             stack[depth].wIn += falloff * isect.c.rgb * lightRadiance;
-                        }
+                        else
+                            stack[depth].wIn += float16_t(dot(lightDir, r.d) > 0.995) * lightRadiance;
                     }
                 }
 
@@ -367,6 +370,9 @@ void main() {
                     nextDir = vec3(refract(f16vec3(r.d), isect.n, ior));
 
                     if (nextDir == vec3(0.0)) nextDir = vec3(reflect(f16vec3(r.d), isect.n));
+
+                    // Prevent double counting the transmittance
+                    stack[depth].hitAlbedo = sqrt(stack[depth].hitAlbedo);
                 }
                 else if (depth > 0)
                 {
