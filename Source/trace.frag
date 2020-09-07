@@ -1,5 +1,6 @@
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
+#extension GL_EXT_shader_16bit_storage : enable
 
 layout(binding = 0) uniform Constants {
     mat4 viewMtx;
@@ -10,9 +11,26 @@ layout(binding = 0) uniform Constants {
     uint numTriangles;
 };
 
-layout(binding = 1) uniform samplerBuffer lights;
-layout(binding = 2) uniform samplerBuffer vertices;
-layout(binding = 3) uniform usamplerBuffer indicies;
+layout(std430) struct Light
+{
+    vec3 pos;
+    vec3 radiance;
+};
+
+layout(std430, binding = 1) buffer lightBuffer
+{
+    Light lights[];
+};
+
+layout(binding = 2) buffer vertexBuffer
+{
+    vec3 vertices[];
+};
+
+layout(binding = 3) buffer indexBuffer
+{
+    uint16_t indicies[];
+};
 
 layout(location = 0) in vec2 screenUV;
 
@@ -30,6 +48,7 @@ struct Ray
 
 struct Triangle
 {
+  int i1, i2, i3;
   vec3 p1, p2, p3;
   vec3 n1, n2, n3;
   vec3 c1, c2, c3;
@@ -60,6 +79,14 @@ bool intersect(inout Ray r, Triangle tri, inout Intersection isect)
 
   r.max_t = t;
 
+  tri.c1 = vertices[tri.i1 * 3 + 1].xyz;
+  tri.c2 = vertices[tri.i2 * 3 + 1].xyz;
+  tri.c3 = vertices[tri.i3 * 3 + 1].xyz;
+
+  tri.n1 = vertices[tri.i1 * 3 + 2].xyz;
+  tri.n2 = vertices[tri.i2 * 3 + 2].xyz;
+  tri.n3 = vertices[tri.i3 * 3 + 2].xyz;
+
   isect.bary = vec3(gamma, alpha, beta);
   isect.t = t;
   isect.n = alpha * tri.n2 + beta * tri.n3 + gamma * tri.n1;
@@ -82,21 +109,13 @@ bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
     {
         Triangle tri;
 
-        int i1 = int(texelFetch(indicies, i * 3    ).x);
-        int i2 = int(texelFetch(indicies, i * 3 + 1).x);
-        int i3 = int(texelFetch(indicies, i * 3 + 2).x);
+        tri.i1 = int(indicies[i * 3    ]);
+        tri.i2 = int(indicies[i * 3 + 1]);
+        tri.i3 = int(indicies[i * 3 + 2]);
 
-        tri.p1 = texelFetch(vertices, i1 * 3).xyz;
-        tri.p2 = texelFetch(vertices, i2 * 3).xyz;
-        tri.p3 = texelFetch(vertices, i3 * 3).xyz;
-
-        tri.c1 = texelFetch(vertices, i1 * 3 + 1).xyz;
-        tri.c2 = texelFetch(vertices, i2 * 3 + 1).xyz;
-        tri.c3 = texelFetch(vertices, i3 * 3 + 1).xyz;
-
-        tri.n1 = texelFetch(vertices, i1 * 3 + 2).xyz;
-        tri.n2 = texelFetch(vertices, i2 * 3 + 2).xyz;
-        tri.n3 = texelFetch(vertices, i3 * 3 + 2).xyz;
+        tri.p1 = vertices[tri.i1 * 3].xyz;
+        tri.p2 = vertices[tri.i2 * 3].xyz;
+        tri.p3 = vertices[tri.i3 * 3].xyz;
 
         hit = intersect(r, tri, isect) || hit;
 
@@ -163,8 +182,8 @@ void main() {
             // Direct Lighting
             for (int i = 0; i < numLights; i++)
             {
-                vec3 lightPos = texelFetch(lights, int(i * 2)).xyz;
-                vec3 lightRadiance = texelFetch(lights, int(i * 2 + 1)).rgb;
+                vec3 lightPos = lights[i].pos.xyz;
+                vec3 lightRadiance = lights[i].radiance.rgb;
 
                 vec3 lightDir = normalize(lightPos - hitPos);
 

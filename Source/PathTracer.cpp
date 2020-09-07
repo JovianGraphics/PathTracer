@@ -16,9 +16,9 @@
 
 struct Vertex
 {
-	glm::vec3 pos;
-	glm::vec3 color;
-	glm::vec3 normal;
+	alignas(16) glm::vec3 pos;
+	alignas(16) glm::vec3 color;
+	alignas(16) glm::vec3 normal;
 };
 
 struct ShaderConstants {
@@ -30,10 +30,16 @@ struct ShaderConstants {
 	uint32 numTriangles;
 };
 
+struct Light
+{
+	alignas(16) glm::vec3 pos;
+	alignas(16) glm::vec3 radiance;
+};
+
 std::vector<Vertex> vertices;
 std::vector<uint16> indices;
-std::vector<glm::vec3> lights = {
-	glm::vec3(0.0, 0.7, 0.0), glm::vec3(1.0, 1.0, 1.0),
+std::vector<Light> lights = {
+	{ glm::vec3(0.0, 0.7, 0.0), glm::vec3(1.0, 1.0, 1.0) },
 };
 
 class TestApp
@@ -42,11 +48,8 @@ public:
 	Amalthea m_amalthea;
 
 	EuropaBuffer::Ref m_vertexBuffer;
-	EuropaBufferView::Ref m_vertexBufferView;
 	EuropaBuffer::Ref m_indexBuffer;
-	EuropaBufferView::Ref m_indexBufferView;
 	EuropaBuffer::Ref m_lightsBuffer;
-	EuropaBufferView::Ref m_lightsBufferView;
 
 	EuropaImage::Ref m_depthImage;
 	EuropaImageView::Ref m_depthView;
@@ -62,9 +65,9 @@ public:
 
 	uint32 m_constantsSize;
 
-	float m_orbitHeight = 0.0;
-	float m_orbitRadius = 8.0;
-	float m_orbitAngle = 8.0;
+	float m_orbitHeight = 1.5;
+	float m_orbitRadius = 3.0;
+	float m_orbitAngle = 0.0;
 
 	GanymedeScrollingBuffer m_frameTimeLog = GanymedeScrollingBuffer(1000, 0);
 	GanymedeScrollingBuffer m_frameRateLog = GanymedeScrollingBuffer(1000, 0);
@@ -82,42 +85,39 @@ public:
 			HimaliaVertexProperty::Color,
 			HimaliaVertexProperty::Normal
 		};
-		plyModel.mesh.BuildVertices<Vertex>(vertices, 3, vertexFormat);
+		uint32 alignments[] = {
+			0, 16, 32
+		};
+		plyModel.mesh.BuildVertices<Vertex>(vertices, 3, vertexFormat, alignments);
 		plyModel.mesh.BuildIndices<uint16>(indices);
 
 		// Create & Upload geometry buffers
 		EuropaBufferInfo vertexBufferInfo;
 		vertexBufferInfo.exclusive = true;
 		vertexBufferInfo.size = uint32(vertices.size() * sizeof(Vertex));
-		vertexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageUniformTexel | EuropaBufferUsageTransferDst);
+		vertexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
 		vertexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_vertexBuffer = amalthea->m_device->CreateBuffer(vertexBufferInfo);
 
 		amalthea->m_transferUtil->UploadToBufferEx(m_vertexBuffer, vertices.data(), uint32(vertices.size()));
 		
-		m_vertexBufferView = amalthea->m_device->CreateBufferView(m_vertexBuffer, vertexBufferInfo.size, 0, EuropaImageFormat::RGB32F);
-
 		EuropaBufferInfo indexBufferInfo;
 		indexBufferInfo.exclusive = true;
 		indexBufferInfo.size = uint32(indices.size() * sizeof(uint16));
-		indexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageUniformTexel | EuropaBufferUsageTransferDst);
+		indexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
 		indexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_indexBuffer = amalthea->m_device->CreateBuffer(indexBufferInfo);
 
 		amalthea->m_transferUtil->UploadToBufferEx(m_indexBuffer, indices.data(), uint32(indices.size()));
 
-		m_indexBufferView = amalthea->m_device->CreateBufferView(m_indexBuffer, indexBufferInfo.size, 0, EuropaImageFormat::R16UI);
-
 		EuropaBufferInfo lightBufferInfo;
 		lightBufferInfo.exclusive = true;
-		lightBufferInfo.size = uint32(lights.size() * sizeof(glm::vec3));
-		lightBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageUniformTexel | EuropaBufferUsageTransferDst);
+		lightBufferInfo.size = uint32(lights.size() * sizeof(Light));
+		lightBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
 		lightBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_lightsBuffer = amalthea->m_device->CreateBuffer(lightBufferInfo);
 
 		amalthea->m_transferUtil->UploadToBufferEx(m_lightsBuffer, lights.data(), uint32(lights.size()));
-
-		m_lightsBufferView = amalthea->m_device->CreateBufferView(m_lightsBuffer, lightBufferInfo.size, 0, EuropaImageFormat::RGB32F);
 
 		amalthea->m_ioSurface->SetKeyCallback([](uint8 keyAscii, uint16 keyV, std::string, IoKeyboardEvent ev)
 			{
@@ -186,9 +186,9 @@ public:
 
 		EuropaDescriptorSetLayout::Ref descLayout = amalthea->m_device->CreateDescriptorSetLayout();
 		descLayout->DynamicUniformBuffer(0, 1, EuropaShaderStageAllGraphics);
-		descLayout->BufferView(1, 1, EuropaShaderStageAllGraphics);
-		descLayout->BufferView(2, 1, EuropaShaderStageAllGraphics);
-		descLayout->BufferView(3, 1, EuropaShaderStageAllGraphics);
+		descLayout->Storage(1, 1, EuropaShaderStageAllGraphics);
+		descLayout->Storage(2, 1, EuropaShaderStageAllGraphics);
+		descLayout->Storage(3, 1, EuropaShaderStageAllGraphics);
 		descLayout->Build();
 
 		m_pipelineLayout = amalthea->m_device->CreatePipelineLayout(EuropaPipelineLayoutInfo{ 1, 0, &descLayout });
@@ -238,8 +238,9 @@ public:
 
 		// Constants & Descriptor Pools / Sets
 		EuropaDescriptorPoolSizes descPoolSizes;
-		descPoolSizes.UniformDynamic = 1;
-		descPoolSizes.UniformTexel = 3;
+		descPoolSizes.UniformDynamic = 1 * amalthea->m_frames.size();
+		descPoolSizes.UniformTexel = 3 * amalthea->m_frames.size();
+		descPoolSizes.Storage = 3 * amalthea->m_frames.size();
 
 		m_descPool = amalthea->m_device->CreateDescriptorPool(descPoolSizes, uint32(amalthea->m_frames.size()));
 
@@ -285,15 +286,15 @@ public:
 		constants->viewInvMtx = glm::inverse(constants->viewMtx);
 		constants->projInvMtx = glm::inverse(constants->projMtx);
 
-		constants->numLights = lights.size() / 2;
+		constants->numLights = lights.size();
 		constants->numTriangles = indices.size() / 3;
 
 		constantsHandle.Unmap();
 
 		m_descSets[ctx.frameIndex]->SetUniformBufferDynamic(constantsHandle.buffer, 0, constantsHandle.offset + m_constantsSize, 0, 0);
-		m_descSets[ctx.frameIndex]->SetBufferView(m_lightsBufferView, 1, 0);
-		m_descSets[ctx.frameIndex]->SetBufferView(m_vertexBufferView, 2, 0);
-		m_descSets[ctx.frameIndex]->SetBufferView(m_indexBufferView, 3, 0);
+		m_descSets[ctx.frameIndex]->SetStorage(m_lightsBuffer, 0, uint32(lights.size() * sizeof(Light)), 1, 0);
+		m_descSets[ctx.frameIndex]->SetStorage(m_vertexBuffer, 0, uint32(vertices.size() * sizeof(Vertex)), 2, 0);
+		m_descSets[ctx.frameIndex]->SetStorage(m_indexBuffer, 0, uint32(indices.size() * sizeof(uint16)), 3, 0);
 
 		EuropaClearValue clearValue[2];
 		clearValue[0].color = glm::vec4(0.0, 0.0, 0.0, 1.0);
