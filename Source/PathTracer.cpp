@@ -17,11 +17,12 @@
 
 #include "blueNoise.h"
 
-struct Vertex
+#include "BVH.h"
+
+struct VertexAux
 {
-	glm::vec3 pos;
+	glm::vec3 normal;
 	glm::u8vec4 color;
-	alignas(16) glm::vec3 normal;
 };
 
 struct ShaderConstants {
@@ -34,6 +35,7 @@ struct ShaderConstants {
 	uint32 numTriangles;
 	uint32 frameIndex;
 	uint32 numRays;
+	uint32 numBVHNodes;
 };
 
 struct Light
@@ -42,21 +44,25 @@ struct Light
 	alignas(16) glm::vec3 radiance;
 };
 
-std::vector<Vertex> vertices;
+std::vector<glm::vec4> vertexPosition;
+std::vector<VertexAux> vertexAuxilary;
 std::vector<uint16> indices;
 std::vector<Light> lights = {
-	{ glm::vec3(0.0, 1.3, 0.0), glm::vec3(1.0, 1.0, 1.0) },
+	{ glm::vec3(0.0, 0.6, 0.0), glm::vec3(1.0, 1.0, 1.0) },
 };
+std::vector<BVHNode> nodes;
 
 class TestApp
 {
 public:
 	Amalthea m_amalthea;
 
+	EuropaBuffer::Ref m_vertexPosBuffer;
 	EuropaBuffer::Ref m_vertexBuffer;
 	EuropaBuffer::Ref m_indexBuffer;
 	EuropaBuffer::Ref m_lightsBuffer;
 	EuropaBuffer::Ref m_blueNoiseBuffer;
+	EuropaBuffer::Ref m_bvhBuffer;
 
 	EuropaImage::Ref m_depthImage;
 	EuropaImageView::Ref m_depthView;
@@ -90,28 +96,45 @@ public:
 	{
 		// Load Model
 		HimaliaPlyModel plyModel;
-		plyModel.LoadFile("Assets/cornellBox.ply");
 
-		HimaliaVertexProperty vertexFormat[] = {
-			HimaliaVertexProperty::Position,
-			HimaliaVertexProperty::ColorRGBA8,
-			HimaliaVertexProperty::Normal
+		plyModel.LoadFile("Assets/CBmonkey.ply");
+
+		//plyModel.LoadFile("Assets/cornellBox.ply");
+
+		HimaliaVertexProperty vertexFormatAux[] = {
+			HimaliaVertexProperty::Normal,
+			HimaliaVertexProperty::ColorRGBA8
 		};
 		uint32 alignments[] = {
-			0, offsetof(Vertex, Vertex::color), offsetof(Vertex, Vertex::normal)
+			0, offsetof(VertexAux, VertexAux::color)
 		};
-		plyModel.mesh.BuildVertices<Vertex>(vertices, 3, vertexFormat, alignments);
+		plyModel.mesh.BuildVertices<VertexAux>(vertexAuxilary, 2, vertexFormatAux, alignments);
+		
+		HimaliaVertexProperty vertexFormat = HimaliaVertexProperty::Position;
+		plyModel.mesh.BuildVertices<glm::vec4>(vertexPosition, 1, &vertexFormat);
+		
 		plyModel.mesh.BuildIndices<uint16>(indices);
+
+		nodes = BuildBVH(vertexPosition, indices);
 
 		// Create & Upload geometry buffers
 		EuropaBufferInfo vertexBufferInfo;
 		vertexBufferInfo.exclusive = true;
-		vertexBufferInfo.size = uint32(vertices.size() * sizeof(Vertex));
+		vertexBufferInfo.size = uint32(vertexAuxilary.size() * sizeof(VertexAux));
 		vertexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
 		vertexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_vertexBuffer = amalthea->m_device->CreateBuffer(vertexBufferInfo);
 
-		amalthea->m_transferUtil->UploadToBufferEx(m_vertexBuffer, vertices.data(), uint32(vertices.size()));
+		amalthea->m_transferUtil->UploadToBufferEx(m_vertexBuffer, vertexAuxilary.data(), uint32(vertexAuxilary.size()));
+
+		EuropaBufferInfo vertexBufferPosInfo;
+		vertexBufferPosInfo.exclusive = true;
+		vertexBufferPosInfo.size = uint32(vertexPosition.size() * sizeof(glm::vec4));
+		vertexBufferPosInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
+		vertexBufferPosInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+		m_vertexPosBuffer = amalthea->m_device->CreateBuffer(vertexBufferPosInfo);
+
+		amalthea->m_transferUtil->UploadToBufferEx(m_vertexPosBuffer, vertexPosition.data(), uint32(vertexPosition.size()));
 		
 		EuropaBufferInfo indexBufferInfo;
 		indexBufferInfo.exclusive = true;
@@ -140,7 +163,14 @@ public:
 
 		amalthea->m_transferUtil->UploadToBufferEx(m_blueNoiseBuffer, _blueNoise, sizeof(_blueNoise) / sizeof(uint16_t));
 
-		GanymedePrint sizeof(_blueNoise);
+		EuropaBufferInfo bvhBufferInfo;
+		bvhBufferInfo.exclusive = true;
+		bvhBufferInfo.size = uint32(nodes.size() * sizeof(BVHNode));
+		bvhBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
+		bvhBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+		m_bvhBuffer = amalthea->m_device->CreateBuffer(bvhBufferInfo);
+
+		amalthea->m_transferUtil->UploadToBufferEx(m_bvhBuffer, nodes.data(), uint32(nodes.size()));
 
 		amalthea->m_ioSurface->SetKeyCallback([](uint8 keyAscii, uint16 keyV, std::string, IoKeyboardEvent ev)
 			{
@@ -238,13 +268,15 @@ public:
 		EuropaShaderModule::Ref shaderVertex = amalthea->m_device->CreateShaderModule(shader_spv_trace_vert, sizeof(shader_spv_trace_vert));
 
 		EuropaDescriptorSetLayout::Ref descLayout = amalthea->m_device->CreateDescriptorSetLayout();
-		descLayout->DynamicUniformBuffer(0, 1, EuropaShaderStageAllGraphics);
-		descLayout->Storage(1, 1, EuropaShaderStageAllGraphics);
-		descLayout->Storage(2, 1, EuropaShaderStageAllGraphics);
-		descLayout->Storage(3, 1, EuropaShaderStageAllGraphics);
-		descLayout->Storage(4, 1, EuropaShaderStageAllGraphics);
-		descLayout->ImageViewStorage(5, 1, EuropaShaderStageAllGraphics);
-		descLayout->ImageViewStorage(6, 1, EuropaShaderStageAllGraphics);
+		descLayout->DynamicUniformBuffer(0, 1, EuropaShaderStageFragment);
+		descLayout->Storage(1, 1, EuropaShaderStageFragment);
+		descLayout->Storage(2, 1, EuropaShaderStageFragment);
+		descLayout->Storage(3, 1, EuropaShaderStageFragment);
+		descLayout->Storage(4, 1, EuropaShaderStageFragment);
+		descLayout->ImageViewStorage(5, 1, EuropaShaderStageFragment);
+		descLayout->ImageViewStorage(6, 1, EuropaShaderStageFragment);
+		descLayout->Storage(7, 1, EuropaShaderStageFragment);
+		descLayout->Storage(8, 1, EuropaShaderStageFragment);
 		descLayout->Build();
 
 		m_pipelineLayout = amalthea->m_device->CreatePipelineLayout(EuropaPipelineLayoutInfo{ 1, 0, &descLayout });
@@ -295,8 +327,8 @@ public:
 		// Constants & Descriptor Pools / Sets
 		EuropaDescriptorPoolSizes descPoolSizes;
 		descPoolSizes.UniformDynamic = 1 * amalthea->m_frames.size();
-		descPoolSizes.StorageTexel = 2 * amalthea->m_frames.size();
-		descPoolSizes.Storage = 4 * amalthea->m_frames.size();
+		descPoolSizes.StorageImage = 2 * amalthea->m_frames.size();
+		descPoolSizes.Storage = 6 * amalthea->m_frames.size();
 
 		m_descPool = amalthea->m_device->CreateDescriptorPool(descPoolSizes, uint32(amalthea->m_frames.size()));
 
@@ -357,7 +389,7 @@ public:
 		auto constantsHandle = amalthea->m_streamingBuffer->AllocateTransient(m_constantsSize);
 		ShaderConstants* constants = constantsHandle.Map<ShaderConstants>();
 
-		constants->viewMtx = glm::lookAt(glm::vec3(cos(m_orbitAngle) * m_orbitRadius, m_orbitHeight, sin(m_orbitAngle) * m_orbitRadius), glm::vec3(0.0, 0.5, 0.0), glm::vec3(0.0, 1.0, 0.0));
+		constants->viewMtx = glm::lookAt(glm::vec3(cos(m_orbitAngle) * m_orbitRadius, m_orbitHeight, sin(m_orbitAngle) * m_orbitRadius), glm::vec3(0.0, 0.0, 0.0), glm::vec3(0.0, 1.0, 0.0));
 		constants->projMtx = glm::perspective(glm::radians(60.0f), float(amalthea->m_windowSize.x) / (amalthea->m_windowSize.y), 0.01f, 256.0f);
 
 		constants->projMtx[1].y = -constants->projMtx[1].y;
@@ -371,17 +403,20 @@ public:
 		constants->numTriangles = indices.size() / 3;
 		constants->frameIndex = m_frameIndex++;
 		constants->numRays = m_numRays;
+		constants->numBVHNodes = nodes.size();
 		m_frameIndex = m_frameIndex & 0xFFFF;
 
 		constantsHandle.Unmap();
 
 		m_descSets[ctx.frameIndex]->SetUniformBufferDynamic(constantsHandle.buffer, 0, constantsHandle.offset + m_constantsSize, 0, 0);
 		m_descSets[ctx.frameIndex]->SetStorage(m_lightsBuffer, 0, uint32(lights.size() * sizeof(Light)), 1, 0);
-		m_descSets[ctx.frameIndex]->SetStorage(m_vertexBuffer, 0, uint32(vertices.size() * sizeof(Vertex)), 2, 0);
+		m_descSets[ctx.frameIndex]->SetStorage(m_vertexBuffer, 0, uint32(vertexAuxilary.size() * sizeof(VertexAux)), 2, 0);
 		m_descSets[ctx.frameIndex]->SetStorage(m_indexBuffer, 0, uint32(indices.size() * sizeof(uint16)), 3, 0);
 		m_descSets[ctx.frameIndex]->SetStorage(m_blueNoiseBuffer, 0, sizeof(_blueNoise), 4, 0);
 		m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[(ctx.frameIndex - 1) % amalthea->m_frames.size()], EuropaImageLayout::General, 5, 0);
 		m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[ctx.frameIndex], EuropaImageLayout::General, 6, 0);
+		m_descSets[ctx.frameIndex]->SetStorage(m_vertexPosBuffer, 0, uint32(vertexPosition.size() * sizeof(glm::vec4)), 7, 0);
+		m_descSets[ctx.frameIndex]->SetStorage(m_bvhBuffer, 0, uint32(nodes.size() * sizeof(BVHNode)), 8, 0);
 
 		EuropaClearValue clearValue[2];
 		clearValue[0].color = glm::vec4(0.0, 0.0, 0.0, 1.0);
@@ -393,8 +428,8 @@ public:
 		ctx.cmdlist->DrawInstanced(6, 1, 0, 0);
 		ctx.cmdlist->EndRenderpass();
 
-		m_fps = m_fps * 0.7 + 0.3 * glm::clamp(1.0 / deltaTime, m_fps - 10.0, m_fps + 10.0);
-		m_frameTimeLog.AddPoint(time, deltaTime * 1000.0);
+		m_fps = m_fps * 0.7f + 0.3f * glm::clamp(1.0f / deltaTime, m_fps - 10.0f, m_fps + 10.0f);
+		m_frameTimeLog.AddPoint(time, deltaTime * 1000.0f);
 		m_frameRateLog.AddPoint(time, m_fps);
 		m_frameCount++;
 
