@@ -23,17 +23,10 @@ else()
 endif()
 
 add_custom_command(
-	OUTPUT trace.frag.h
+	OUTPUT trace.comp.h
 	PRE_BUILD
-	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/trace.frag output=${CMAKE_BINARY_DIR}/generated/trace.frag.h
-	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/trace.frag
-)
-
-add_custom_command(
-	OUTPUT trace.vert.h
-	PRE_BUILD
-	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/trace.vert output=${CMAKE_BINARY_DIR}/generated/trace.vert.h
-	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/trace.vert
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/trace.comp output=${CMAKE_BINARY_DIR}/generated/trace.comp.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/trace.comp
 )
 
 add_custom_command(
@@ -51,26 +44,25 @@ add_custom_command(
 )
 
 add_custom_command(
-	OUTPUT gbuffers.frag.h
+	OUTPUT composite.frag.h
 	PRE_BUILD
-	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/gbuffers.frag output=${CMAKE_BINARY_DIR}/generated/gbuffers.frag.h
-	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/gbuffers.frag
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/composite.frag output=${CMAKE_BINARY_DIR}/generated/composite.frag.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/composite.frag
 )
 
 add_custom_command(
-	OUTPUT gbuffers.vert.h
+	OUTPUT composite.vert.h
 	PRE_BUILD
-	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/gbuffers.vert output=${CMAKE_BINARY_DIR}/generated/gbuffers.vert.h
-	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/gbuffers.vert
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/composite.vert output=${CMAKE_BINARY_DIR}/generated/composite.vert.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/composite.vert
 )
 
 add_custom_target(Shaders ALL DEPENDS
-	trace.frag.h
-	trace.vert.h
+	trace.comp.h
 	visualize.frag.h
 	visualize.vert.h
-	gbuffers.frag.h
-	gbuffers.vert.h
+	composite.frag.h
+	composite.vert.h
 )
 
 add_dependencies(PathTracer Shaders)

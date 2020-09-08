@@ -6,12 +6,11 @@
 #include "Ganymede/Source/GanymedeECS.h"
 #include "Himalia/Source/Himalia.h"
 
-#include "trace.frag.h"
-#include "trace.vert.h"
+#include "trace.comp.h"
 #include "visualize.frag.h"
 #include "visualize.vert.h"
-#include "gbuffers.frag.h"
-#include "gbuffers.vert.h"
+#include "composite.frag.h"
+#include "composite.vert.h"
 
 #include <thread>
 #include <chrono>
@@ -26,7 +25,7 @@
 
 std::vector<glm::vec4> vertexPosition;
 std::vector<VertexAux> vertexAuxilary;
-std::vector<uint16> indices;
+std::vector<uint32> indices;
 std::vector<Light> lights = {
 	{ glm::vec3(0.0, 0.7, 0.0), glm::vec3(1.0, 1.0, 1.0) },
 };
@@ -50,22 +49,13 @@ public:
 	EuropaImage::Ref m_depthImage;
 	EuropaImageView::Ref m_depthView;
 
-	EuropaImage::Ref m_albedoImage;
-	EuropaImageView::Ref m_albedoView;
-	
-	EuropaImage::Ref m_posImage;
-	EuropaImageView::Ref m_posView;
-
-	EuropaImage::Ref m_normalsImage;
-	EuropaImageView::Ref m_normalsView;
-
 	EuropaRenderPass::Ref m_mainRenderPass;
 
 	EuropaDescriptorPool::Ref m_descPool;
-	EuropaGraphicsPipeline::Ref m_pipeline;
-	EuropaGraphicsPipeline::Ref m_pipelineGBuffer;
-	EuropaGraphicsPipeline::Ref m_pipelineVis;
-	EuropaGraphicsPipeline::Ref m_pipelineVisLine;
+	EuropaPipeline::Ref m_pipeline;
+	EuropaPipeline::Ref m_pipelineComposite;
+	EuropaPipeline::Ref m_pipelineVis;
+	EuropaPipeline::Ref m_pipelineVisLine;
 	EuropaPipelineLayout::Ref m_pipelineLayout;
 
 	std::vector<EuropaDescriptorSet::Ref> m_descSets;
@@ -94,6 +84,7 @@ public:
 		// Load Model
 		HimaliaPlyModel plyModel;
 
+		//plyModel.LoadFile("Assets/CBdragon.ply");
 		plyModel.LoadFile("Assets/CBmonkey.ply");
 		//plyModel.LoadFile("Assets/cornellBox.ply");
 
@@ -109,7 +100,7 @@ public:
 		HimaliaVertexProperty vertexFormat = HimaliaVertexProperty::Position;
 		plyModel.mesh.BuildVertices<glm::vec4>(vertexPosition, 1, &vertexFormat);
 		
-		plyModel.mesh.BuildIndices<uint16>(indices);
+		plyModel.mesh.BuildIndices<uint32>(indices);
 
 		bvhVisStartIndex = indices.size();
 		bvhVisStartVertex = vertexPosition.size();
@@ -139,7 +130,7 @@ public:
 		
 		EuropaBufferInfo indexBufferInfo;
 		indexBufferInfo.exclusive = true;
-		indexBufferInfo.size = uint32(indices.size() * sizeof(uint16));
+		indexBufferInfo.size = uint32(indices.size() * sizeof(uint32));
 		indexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageIndex | EuropaBufferUsageTransferDst);
 		indexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_indexBuffer = amalthea->m_device->CreateBuffer(indexBufferInfo);
@@ -162,7 +153,7 @@ public:
 		blueNoiseBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_blueNoiseBuffer = amalthea->m_device->CreateBuffer(blueNoiseBufferInfo);
 
-		amalthea->m_transferUtil->UploadToBufferEx(m_blueNoiseBuffer, _blueNoise, sizeof(_blueNoise) / sizeof(uint16_t));
+		amalthea->m_transferUtil->UploadToBufferEx(m_blueNoiseBuffer, _blueNoise, sizeof(_blueNoise) / sizeof(uint16));
 
 		EuropaBufferInfo bvhBufferInfo;
 		bvhBufferInfo.exclusive = true;
@@ -208,79 +199,6 @@ public:
 
 		m_depthView = amalthea->m_device->CreateImageView(depthViewInfo);
 
-		// Create GBuffers
-		{
-			EuropaImageInfo info;
-			info.width = amalthea->m_windowSize.x;
-			info.height = amalthea->m_windowSize.y;
-			info.initialLayout = EuropaImageLayout::Undefined;
-			info.type = EuropaImageType::Image2D;
-			info.format = EuropaImageFormat::RGBA32F;
-			info.usage = EuropaImageUsage(EuropaImageUsageColorAttachment | EuropaImageUsageInputAttachment);
-			info.memoryUsage = EuropaMemoryUsage::GpuOnly;
-
-			m_posImage = amalthea->m_device->CreateImage(info);
-
-			EuropaImageViewCreateInfo viewInfo;
-			viewInfo.format = EuropaImageFormat::RGBA32F;
-			viewInfo.image = m_posImage;
-			viewInfo.type = EuropaImageViewType::View2D;
-			viewInfo.minArrayLayer = 0;
-			viewInfo.minMipLevel = 0;
-			viewInfo.numArrayLayers = 1;
-			viewInfo.numMipLevels = 1;
-
-			m_posView = amalthea->m_device->CreateImageView(viewInfo);
-		}
-
-		{
-			EuropaImageInfo info;
-			info.width = amalthea->m_windowSize.x;
-			info.height = amalthea->m_windowSize.y;
-			info.initialLayout = EuropaImageLayout::Undefined;
-			info.type = EuropaImageType::Image2D;
-			info.format = EuropaImageFormat::RGBA16Snorm;
-			info.usage = EuropaImageUsage(EuropaImageUsageColorAttachment | EuropaImageUsageInputAttachment);
-			info.memoryUsage = EuropaMemoryUsage::GpuOnly;
-
-			m_normalsImage = amalthea->m_device->CreateImage(info);
-
-			EuropaImageViewCreateInfo viewInfo;
-			viewInfo.format = EuropaImageFormat::RGBA16Snorm;
-			viewInfo.image = m_normalsImage;
-			viewInfo.type = EuropaImageViewType::View2D;
-			viewInfo.minArrayLayer = 0;
-			viewInfo.minMipLevel = 0;
-			viewInfo.numArrayLayers = 1;
-			viewInfo.numMipLevels = 1;
-
-			m_normalsView = amalthea->m_device->CreateImageView(viewInfo);
-		}
-
-		{
-			EuropaImageInfo info;
-			info.width = amalthea->m_windowSize.x;
-			info.height = amalthea->m_windowSize.y;
-			info.initialLayout = EuropaImageLayout::Undefined;
-			info.type = EuropaImageType::Image2D;
-			info.format = EuropaImageFormat::RGBA8Unorm;
-			info.usage = EuropaImageUsage(EuropaImageUsageColorAttachment | EuropaImageUsageInputAttachment);
-			info.memoryUsage = EuropaMemoryUsage::GpuOnly;
-
-			m_albedoImage = amalthea->m_device->CreateImage(info);
-
-			EuropaImageViewCreateInfo viewInfo;
-			viewInfo.format = EuropaImageFormat::RGBA8Unorm;
-			viewInfo.image = m_albedoImage;
-			viewInfo.type = EuropaImageViewType::View2D;
-			viewInfo.minArrayLayer = 0;
-			viewInfo.minMipLevel = 0;
-			viewInfo.numArrayLayers = 1;
-			viewInfo.numMipLevels = 1;
-
-			m_albedoView = amalthea->m_device->CreateImageView(viewInfo);
-		}
-
 		// Create Accumulation buffer
 		m_accumulationImages.clear();
 		m_accumulationImageViews.clear();
@@ -322,33 +240,6 @@ public:
 			EuropaImageLayout::Undefined,
 			EuropaImageLayout::Present
 			});
-		uint32 gBuffersPositionTarget = m_mainRenderPass->AddAttachment(EuropaAttachmentInfo{
-			EuropaImageFormat::RGBA32F,
-			EuropaAttachmentLoadOp::Clear,
-			EuropaAttachmentStoreOp::Store,
-			EuropaAttachmentLoadOp::DontCare,
-			EuropaAttachmentStoreOp::DontCare,
-			EuropaImageLayout::Undefined,
-			EuropaImageLayout::ColorAttachment
-			});
-		uint32 gBuffersNormalTarget = m_mainRenderPass->AddAttachment(EuropaAttachmentInfo{
-			EuropaImageFormat::RGBA16Snorm,
-			EuropaAttachmentLoadOp::Clear,
-			EuropaAttachmentStoreOp::Store,
-			EuropaAttachmentLoadOp::DontCare,
-			EuropaAttachmentStoreOp::DontCare,
-			EuropaImageLayout::Undefined,
-			EuropaImageLayout::ColorAttachment
-			});
-		uint32 gBuffersAlbedoTarget = m_mainRenderPass->AddAttachment(EuropaAttachmentInfo{
-			EuropaImageFormat::RGBA8Unorm,
-			EuropaAttachmentLoadOp::Clear,
-			EuropaAttachmentStoreOp::Store,
-			EuropaAttachmentLoadOp::DontCare,
-			EuropaAttachmentStoreOp::DontCare,
-			EuropaImageLayout::Undefined,
-			EuropaImageLayout::ColorAttachment
-			});
 		uint32 depthTarget = m_mainRenderPass->AddAttachment(EuropaAttachmentInfo{
 			EuropaImageFormat::D16Unorm,
 			EuropaAttachmentLoadOp::Clear,
@@ -358,45 +249,43 @@ public:
 			EuropaImageLayout::Undefined,
 			EuropaImageLayout::DepthStencilAttachment
 			});
-		std::vector<EuropaAttachmentReference> attachmentsGBuffers = {
-			{ gBuffersAlbedoTarget, EuropaImageLayout::ColorAttachment },
-			{ gBuffersPositionTarget, EuropaImageLayout::ColorAttachment },
-			{ gBuffersNormalTarget, EuropaImageLayout::ColorAttachment },
-		};
 		EuropaAttachmentReference depthAttachment = { depthTarget, EuropaImageLayout::DepthStencilAttachment };
-		uint32 gBuffersPass = m_mainRenderPass->AddSubpass(EuropaPipelineBindPoint::Graphics, attachmentsGBuffers, &depthAttachment);
 		std::vector<EuropaAttachmentReference> attachmentsForward = {
-			{ presentTarget, EuropaImageLayout::ColorAttachment },
-			{ gBuffersPositionTarget, EuropaImageLayout::ShaderReadOnly, true },
-			{ gBuffersNormalTarget, EuropaImageLayout::ShaderReadOnly, true },
-			{ gBuffersAlbedoTarget, EuropaImageLayout::ShaderReadOnly, true },
+			{ presentTarget, EuropaImageLayout::ColorAttachment }
 		};
 		uint32 forwardPass = m_mainRenderPass->AddSubpass(EuropaPipelineBindPoint::Graphics, attachmentsForward, &depthAttachment);
-		//m_mainRenderPass->AddDependency(EuropaRenderPass::SubpassExternal, gBuffersPass, EuropaPipelineStageBottomOfPipe, EuropaAccessNone, EuropaPipelineStageColorAttachmentOutput, EuropaAccessColorAttachmentWrite);
-		m_mainRenderPass->AddDependency(gBuffersPass, forwardPass, EuropaPipelineStageColorAttachmentOutput, EuropaAccessColorAttachmentWrite, EuropaPipelineStageFragmentShader, EuropaAccessShaderRead);
+		m_mainRenderPass->AddDependency(EuropaRenderPass::SubpassExternal, forwardPass, EuropaPipelineStageBottomOfPipe, EuropaAccessNone, EuropaPipelineStageFragmentShader, EuropaAccessColorAttachmentWrite);
 		m_mainRenderPass->CreateRenderpass();
 
 		// Create Pipeline
 		EuropaDescriptorSetLayout::Ref descLayout = amalthea->m_device->CreateDescriptorSetLayout();
-		descLayout->DynamicUniformBuffer(0, 1, EuropaShaderStageAllGraphics);
-		descLayout->Storage(1, 1, EuropaShaderStageFragment);
-		descLayout->Storage(2, 1, EuropaShaderStageFragment);
-		descLayout->Storage(3, 1, EuropaShaderStageFragment);
-		descLayout->Storage(4, 1, EuropaShaderStageAllGraphics);
-		descLayout->ImageViewStorage(5, 1, EuropaShaderStageFragment);
-		descLayout->ImageViewStorage(6, 1, EuropaShaderStageFragment);
-		descLayout->Storage(7, 1, EuropaShaderStageFragment);
-		descLayout->Storage(8, 1, EuropaShaderStageFragment);
-		descLayout->InputAttachment(9, 1, EuropaShaderStageFragment);
-		descLayout->InputAttachment(10, 1, EuropaShaderStageFragment);
-		descLayout->InputAttachment(11, 1, EuropaShaderStageFragment);
+		descLayout->DynamicUniformBuffer(0, 1, EuropaShaderStageAll);
+		descLayout->Storage(1, 1, EuropaShaderStageCompute);
+		descLayout->Storage(2, 1, EuropaShaderStageCompute);
+		descLayout->Storage(3, 1, EuropaShaderStageCompute);
+		descLayout->Storage(4, 1, EuropaShaderStageCompute);
+		descLayout->ImageViewStorage(5, 1, EuropaShaderStageCompute);
+		descLayout->ImageViewStorage(6, 1, EuropaShaderStageAll);
+		descLayout->Storage(7, 1, EuropaShaderStageCompute);
+		descLayout->Storage(8, 1, EuropaShaderStageCompute);
+		descLayout->InputAttachment(9, 1, EuropaShaderStageCompute);
+		descLayout->InputAttachment(10, 1, EuropaShaderStageCompute);
+		descLayout->InputAttachment(11, 1, EuropaShaderStageCompute);
 		descLayout->Build();
 
 		m_pipelineLayout = amalthea->m_device->CreatePipelineLayout(EuropaPipelineLayoutInfo{ 1, 0, &descLayout });
 
 		{
-			EuropaShaderModule::Ref shaderFragment = amalthea->m_device->CreateShaderModule(shader_spv_trace_frag, sizeof(shader_spv_trace_frag));
-			EuropaShaderModule::Ref shaderVertex = amalthea->m_device->CreateShaderModule(shader_spv_trace_vert, sizeof(shader_spv_trace_vert));
+			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_trace_comp, sizeof(shader_spv_trace_comp));
+
+			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
+
+			m_pipeline = amalthea->m_device->CreateComputePipeline(stage, m_pipelineLayout);
+		}
+
+		{
+			EuropaShaderModule::Ref shaderFragment = amalthea->m_device->CreateShaderModule(shader_spv_composite_frag, sizeof(shader_spv_composite_frag));
+			EuropaShaderModule::Ref shaderVertex = amalthea->m_device->CreateShaderModule(shader_spv_composite_vert, sizeof(shader_spv_composite_vert));
 
 			EuropaShaderStageInfo stages[2] = {
 				EuropaShaderStageInfo{ EuropaShaderStageFragment, shaderFragment, "main" },
@@ -424,7 +313,7 @@ public:
 			pipelineDesc.renderpass = m_mainRenderPass;
 			pipelineDesc.targetSubpass = forwardPass;
 
-			m_pipeline = amalthea->m_device->CreateGraphicsPipeline(pipelineDesc);
+			m_pipelineComposite = amalthea->m_device->CreateGraphicsPipeline(pipelineDesc);
 		}
 
 		{
@@ -488,24 +377,13 @@ public:
 			pipelineDesc.targetSubpass = forwardPass;
 			pipelineDesc.inputAssembly.topology = EuropaPrimitiveTopology::LineList;
 			m_pipelineVisLine = amalthea->m_device->CreateGraphicsPipeline(pipelineDesc);
-
-			EuropaShaderModule::Ref shaderGBuffersFragment = amalthea->m_device->CreateShaderModule(shader_spv_gbuffers_frag, sizeof(shader_spv_gbuffers_frag));
-			EuropaShaderModule::Ref shaderGBuffersVertex = amalthea->m_device->CreateShaderModule(shader_spv_gbuffers_vert, sizeof(shader_spv_gbuffers_vert));
-
-			stages[0] = EuropaShaderStageInfo{ EuropaShaderStageFragment, shaderGBuffersFragment, "main" };
-			stages[1] = EuropaShaderStageInfo{ EuropaShaderStageVertex, shaderGBuffersVertex, "main" };
-
-			pipelineDesc.targetSubpass = gBuffersPass;
-			pipelineDesc.inputAssembly.topology = EuropaPrimitiveTopology::TriangleList;
-			pipelineDesc.blendingAttachmentCount = 3;
-			m_pipelineGBuffer = amalthea->m_device->CreateGraphicsPipeline(pipelineDesc);
 		}
 
 		// Create Framebuffers
 		for (AmaltheaFrame& ctx : amalthea->m_frames)
 		{
 			EuropaFramebufferCreateInfo desc;
-			desc.attachments = { ctx.imageView, m_posView, m_normalsView, m_albedoView, m_depthView };
+			desc.attachments = { ctx.imageView, m_depthView };
 			desc.width = amalthea->m_windowSize.x;
 			desc.height = amalthea->m_windowSize.y;
 			desc.layers = 1;
@@ -606,7 +484,7 @@ public:
 		{
 			m_descSets[ctx.frameIndex]->SetStorage(m_lightsBuffer, 0, uint32(lights.size() * sizeof(Light)), 1, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_vertexBuffer, 0, uint32(bvhVisStartVertex * sizeof(VertexAux)), 2, 0);
-			m_descSets[ctx.frameIndex]->SetStorage(m_indexBuffer, 0, uint32(bvhVisStartIndex * sizeof(uint16)), 3, 0);
+			m_descSets[ctx.frameIndex]->SetStorage(m_indexBuffer, 0, uint32(bvhVisStartIndex * sizeof(uint32)), 3, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_blueNoiseBuffer, 0, sizeof(_blueNoise), 4, 0);
 			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[(ctx.frameIndex - 1) % amalthea->m_frames.size()], EuropaImageLayout::General, 5, 0);
 			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[ctx.frameIndex], EuropaImageLayout::General, 6, 0);
@@ -614,40 +492,33 @@ public:
 			m_descSets[ctx.frameIndex]->SetStorage(m_bvhBuffer, 0, uint32(nodes.size() * sizeof(BVHNode)), 8, 0);
 		}
 
-		EuropaClearValue clearValue[5];
+		EuropaClearValue clearValue[2];
 		clearValue[0].color = glm::vec4(0.0, 0.0, 0.0, 1.0);
-		clearValue[1].color = glm::vec4(0.0, 0.0, 0.0, 0.0);
-		clearValue[2].color = glm::vec4(0.0, 0.0, 0.0, 0.0);
-		clearValue[3].color = glm::vec4(0.0, 0.0, 0.0, 0.0);
-		clearValue[4].depthStencil = glm::vec2(1.0, 0.0);
+		clearValue[1].depthStencil = glm::vec2(1.0, 0.0);
 
-		ctx.cmdlist->BeginRenderpass(m_mainRenderPass, m_frameBuffers[ctx.frameIndex], glm::ivec2(0), glm::uvec2(amalthea->m_windowSize), 5, clearValue);
+		if (!m_visualize)
+		{
+			ctx.cmdlist->BindDescriptorSetsDynamicOffsets(EuropaPipelineBindPoint::Compute, m_pipelineLayout, m_descSets[ctx.frameIndex], 0, constantsHandle.offset);
+			ctx.cmdlist->BindCompute(m_pipeline);
+			ctx.cmdlist->Dispatch(ceil(float(amalthea->m_windowSize.x) / 8.0f), ceil(float(amalthea->m_windowSize.y) / 8.0f), 1);
+			ctx.cmdlist->Barrier(m_accumulationImages[ctx.frameIndex], EuropaAccessNone, EuropaAccessNone, EuropaImageLayout::General, EuropaImageLayout::General, EuropaPipelineStageBottomOfPipe, EuropaPipelineStageFragmentShader);
+		}
+
+		ctx.cmdlist->BeginRenderpass(m_mainRenderPass, m_frameBuffers[ctx.frameIndex], glm::ivec2(0), glm::uvec2(amalthea->m_windowSize), 2, clearValue);
 		ctx.cmdlist->BindDescriptorSetsDynamicOffsets(EuropaPipelineBindPoint::Graphics, m_pipelineLayout, m_descSets[ctx.frameIndex], 0, constantsHandle.offset);
 		if (m_visualize)
 		{
-			ctx.cmdlist->NextSubpass();
 			ctx.cmdlist->BindPipeline(m_pipelineVis);
 			ctx.cmdlist->BindVertexBuffer(m_vertexPosBuffer, 0, 0);
 			ctx.cmdlist->BindVertexBuffer(m_vertexBuffer, 0, 1);
-			ctx.cmdlist->BindIndexBuffer(m_indexBuffer, 0, EuropaImageFormat::R16UI);
+			ctx.cmdlist->BindIndexBuffer(m_indexBuffer, 0, EuropaImageFormat::R32UI);
 			ctx.cmdlist->DrawIndexed(bvhVisStartIndex, 1, 0, 0, 0);
 			ctx.cmdlist->BindPipeline(m_pipelineVisLine);
 			ctx.cmdlist->DrawIndexed(indices.size() - bvhVisStartIndex, 1, bvhVisStartIndex, bvhVisStartVertex, 0);
 		}
 		else
 		{
-			m_descSets[ctx.frameIndex]->SetInputAttachment(m_posView, EuropaImageLayout::ShaderReadOnly, 9, 0);
-			m_descSets[ctx.frameIndex]->SetInputAttachment(m_normalsView, EuropaImageLayout::ShaderReadOnly, 10, 0);
-			m_descSets[ctx.frameIndex]->SetInputAttachment(m_albedoView, EuropaImageLayout::ShaderReadOnly, 11, 0);
-			// GBuffer Pass
-			ctx.cmdlist->BindPipeline(m_pipelineGBuffer);
-			ctx.cmdlist->BindVertexBuffer(m_vertexPosBuffer, 0, 0);
-			ctx.cmdlist->BindVertexBuffer(m_vertexBuffer, 0, 1);
-			ctx.cmdlist->BindIndexBuffer(m_indexBuffer, 0, EuropaImageFormat::R16UI);
-			ctx.cmdlist->DrawIndexed(bvhVisStartIndex, 1, 0, 0, 0);
-			// Secondary Visibility
-			ctx.cmdlist->NextSubpass();
-			ctx.cmdlist->BindPipeline(m_pipeline);
+			ctx.cmdlist->BindPipeline(m_pipelineComposite);
 			ctx.cmdlist->DrawInstanced(6, 1, 0, 0);
 		}
 		ctx.cmdlist->EndRenderpass();

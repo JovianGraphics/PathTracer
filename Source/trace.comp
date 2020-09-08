@@ -3,12 +3,15 @@
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_explicit_arithmetic_types : enable
 
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
 layout(binding = 0) uniform Constants {
     mat4 viewMtx;
     mat4 projMtx;
     mat4 viewInvMtx;
     mat4 projInvMtx;
     vec2 viewportSize;
+    vec2 viewportBase;
     uint numLights;
     uint numTriangles;
     uint frameIndex;
@@ -31,11 +34,11 @@ struct VertexAux
 struct BVHNode
 {
     vec3 a;
-    uint16_t left;
-    uint16_t right;
     vec3 b;
-    uint16_t startPrim;
-    uint16_t endPrim;
+    uint startPrim;
+    uint endPrim;
+    uint left;
+    uint right;
 };
 
 layout(std430, binding = 1) buffer lightBuffer
@@ -50,7 +53,7 @@ layout(std430, binding = 2) buffer vertexBufferAux
 
 layout(std430, binding = 3) buffer indexBuffer
 {
-    layout(align = 8) uint16_t indicies[];
+    layout(align = 8) uint indicies[];
 };
 
 layout(std430, binding = 4) buffer blueNoiseBuffer
@@ -71,29 +74,21 @@ layout(std430, binding = 8) buffer bvhBuffer
     BVHNode bvh[];
 };
 
-layout(location = 0) in vec2 screenUV;
-
-layout(location = 0) out vec4 outColor;
-
-layout (input_attachment_index = 0, set = 0, binding = 9) uniform subpassInput inputPos;
-layout (input_attachment_index = 1, set = 0, binding = 10) uniform subpassInput inputNormals;
-layout (input_attachment_index = 2, set = 0, binding = 11) uniform subpassInput inputAlbedo;
-
 #include "noise.glsl"
 
 struct Ray
 {
   vec3 o;
-  vec3 d;
-  vec3 rcpD;
   float min_t;
+  vec3 d;
   float max_t;
+  f16vec3 rcpD;
 };
 
 struct Triangle
 {
-  int i1, i2, i3;
   vec3 p1, p2, p3;
+  int i1, i2, i3;
   f16vec3 n1, n2, n3;
   f16vec4 c1, c2, c3;
 };
@@ -106,32 +101,38 @@ struct Intersection
   float t;
 };
 
-bool intersectBBox(Ray r, vec3 a, vec3 b)
+bool intersectBBox(Ray r, vec3 _a, vec3 _b)
 {
-    float _t0, _t1;
+    vec3 c = (_a + _b) * 0.5f;
+    f16vec3 a = f16vec3(_a - c);
+    f16vec3 b = f16vec3(_b - c);
+    f16vec3 o = f16vec3(r.o - c);
+    f16vec3 rrd = r.rcpD;
 
-    vec3 rrd = r.rcpD;
+    float16_t _t0, _t1;
+   
+   _t0 = (a.x - o.x) * rrd.x;
+    _t1 = (b.x - o.x) * rrd.x;
 
-    _t0 = (a.x - r.o.x) * rrd.x;
-    _t1 = (b.x - r.o.x) * rrd.x;
+    float16_t tmin = min(_t0, _t1);
+    float16_t tmax = max(_t0, _t1);
 
-    float tmin = min(_t0, _t1);
-    float tmax = max(_t0, _t1);
+    _t0 = (a.y - o.y) * rrd.y;
+    _t1 = (b.y - o.y) * rrd.y;
 
-    _t0 = (a.y - r.o.y) * rrd.y;
-    _t1 = (b.y - r.o.y) * rrd.y;
+    tmin = max(tmin, min(_t0, _t1));
+    tmax = min(tmax, max(_t0, _t1));
+
+    _t0 = (a.z - o.z) * rrd.z;
+    _t1 = (b.z - o.z) * rrd.z;
 
     tmin = max(tmin, min(_t0, _t1));
     tmax = min(tmax, max(_t0, _t1));
 
-    _t0 = (a.z - r.o.z) * rrd.z;
-    _t1 = (b.z - r.o.z) * rrd.z;
-
-    tmin = max(tmin, min(_t0, _t1));
-    tmax = min(tmax, max(_t0, _t1));
+    const float eps = 1.0e-6;
 
     if (tmax >= tmin) {
-        if (r.min_t < tmax && r.max_t > tmin)
+        if (r.min_t - eps < tmax && r.max_t + eps > tmin)
         {
             return true;
         }
@@ -178,11 +179,11 @@ bool intersect(inout Ray r, Triangle tri, inout Intersection isect, bool stopIfH
   return true;
 }
 
-bool traceRayTriangles(inout Ray r, int start, int end, out Intersection isect, bool stopIfHit)
+bool traceRayTriangles(inout Ray r, uint start, uint end, out Intersection isect, bool stopIfHit)
 {
     bool hit = false;
 
-    for (int i = start; i < end; i += 3)
+    for (uint i = start; i < end; i += 3)
     {
         Triangle tri;
 
@@ -202,6 +203,10 @@ bool traceRayTriangles(inout Ray r, int start, int end, out Intersection isect, 
     return hit;
 }
 
+// This stack is only ever used in one function, and this function does not nest.
+// Putting it here greatly reduce register usage!
+uint bvhStack[32];
+
 bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
 {
     isect.t = 10000.0;
@@ -210,54 +215,38 @@ bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
 
     bool hit = false;
 
-    uint stack[64];
-    stack[0] = 0;
+    bvhStack[0] = uint(0);
     uint stackSize = 1;
 
     while (stackSize > 0)
     {
-        uint index = stack[stackSize - 1];
+        uint index = bvhStack[stackSize - 1];
         stackSize -= 1;
-        
-        if (bvh[index].left != bvh[index].right)
-        {
-            // Not a leaf
-            uint left = uint(bvh[index].left);
-            uint right = uint(bvh[index].right);
 
-            if (intersectBBox(r, bvh[left].a, bvh[left].b))
-            {
-                stack[stackSize] = left;
-                stackSize++;
-            }
+        BVHNode node = bvh[index];
 
-            if (intersectBBox(r, bvh[right].a, bvh[right].b))
-            {
-                stack[stackSize] = right;
-                stackSize++;
-            }
-        }
-        else
+        if (intersectBBox(r, node.a, node.b))
         {
-            // Leaf node
-            hit = traceRayTriangles(r, bvh[index].startPrim, bvh[index].endPrim, isect, stopIfHit) || hit;
-            if (hit && stopIfHit) return true;
+            if (node.left != node.right)
+            {
+                bvhStack[stackSize    ] = uint(node.left);
+                bvhStack[stackSize + 1] = uint(node.right);
+                stackSize += 2;
+            }
+            else
+            {
+                // Leaf node
+                hit = traceRayTriangles(r, bvh[index].startPrim, bvh[index].endPrim, isect, stopIfHit) || hit;
+                if (hit && stopIfHit) return true;
+            }
         }
     }
 
     return hit;
 }
 
-f16vec3 reinhard(f16vec3 v)
-{
-    return v / (1.0hf + v);
-}
-
 struct RayStack
 {
-    vec3 hitPos;
-    vec3 nextDir;
-    f16vec3 hitNormal;
     f16vec4 hitAlbedo;
     f16vec3 wIn;
 };
@@ -266,8 +255,6 @@ const int maxDepth = 5;
 
 bool shadeHit(int jitter, int depth, uint n, vec3 hitPos, inout Intersection isect, inout Ray r, inout RayStack stack, in bool isLastHitDelta)
 {
-    stack.hitPos = hitPos;
-    stack.hitNormal = isect.n;
     stack.hitAlbedo = isect.c;
 
     // Direct Lighting
@@ -284,7 +271,7 @@ bool shadeHit(int jitter, int depth, uint n, vec3 hitPos, inout Intersection ise
 
         rLight.o = hitPos;
         rLight.d = lightDir;
-        rLight.rcpD = 1.0 / rLight.d;
+        rLight.rcpD = f16vec3(1.0 / rLight.d);
         rLight.min_t = 0.00005;
         rLight.max_t = dist - 0.00005;
 
@@ -324,11 +311,9 @@ bool shadeHit(int jitter, int depth, uint n, vec3 hitPos, inout Intersection ise
         if (float(jitter) / 65536.0 > 0.7) return true;
     }
 
-    stack.nextDir = nextDir;
-
     r.o = hitPos;
     r.d = nextDir;
-    r.rcpD = 1.0 / r.d;
+    r.rcpD = f16vec3(1.0 / r.d);
     r.min_t = 0.00005;
     r.max_t = 10000.0;
 
@@ -336,16 +321,20 @@ bool shadeHit(int jitter, int depth, uint n, vec3 hitPos, inout Intersection ise
 }
 
 void main() {
-    int jitter = (blueNoise[(uint(gl_FragCoord.x) & 0xFF) + ((uint(gl_FragCoord.y) & 0xFF) << 8)] * 256 + blueNoise[frameIndex]) & 0xFFFF;
+    uvec2 launchIndex = gl_GlobalInvocationID.xy + uvec2(viewportBase);
+
+    // Start pathtracing
+    if (launchIndex.x >= viewportSize.x || launchIndex.y >= viewportSize.y) return;
+
+    int jitter = (blueNoise[(launchIndex.x & 0xFF) + ((launchIndex.y & 0xFF) << 8)] * 256 + blueNoise[frameIndex]) & 0xFFFF;
+
+    vec4 projPos = vec4(((vec2(launchIndex) + WeylNth(jitter)) / viewportSize) * 2.0 - 1.0, 1.0, 1.0);
+    vec4 viewPos = projInvMtx * projPos; viewPos /= viewPos.w;
+    vec3 worldPos = (viewInvMtx * viewPos).xyz;
 
     vec4 camPos = viewInvMtx * vec4(0.0, 0.0, 0.0, 1.0); camPos /= camPos.w;
 
     vec3 accumulation = vec3(0.0);
-
-    vec4 gbuffersPos = subpassLoad(inputPos);
-    f16vec3 gbufferNormal = f16vec3(subpassLoad(inputNormals).rgb);
-    f16vec4 gbufferAlbedo = f16vec4(subpassLoad(inputAlbedo));
-    vec3 rayDir = gbuffersPos.xyz - camPos.xyz;
 
     for (uint n = 0; n < numRays; n++)
     {
@@ -353,52 +342,46 @@ void main() {
         Ray r;
 
         r.o = camPos.xyz;
-        r.d = normalize(rayDir);
-        r.rcpD = 1.0 / r.d;
-        r.min_t = 0.00005;
+        r.d = normalize(worldPos - camPos.xyz);
+        r.rcpD = f16vec3(1.0 / r.d);
+        r.min_t = 0.01;
         r.max_t = 10000.0;
 
-        if (gbuffersPos.a > 0.0)
+        RayStack stack[maxDepth];
+
+        for (int i = 0; i < maxDepth; i++)
         {
-            RayStack stack[maxDepth];
-
-            for (int i = 0; i < maxDepth; i++)
-            {
-                stack[i].hitPos = vec3(0.0);
-                stack[i].nextDir = vec3(0.0);
-                stack[i].hitNormal = f16vec3(0.0);
-                stack[i].hitAlbedo = f16vec4(0.0);
-                stack[i].wIn = f16vec3(0.0);
-            }
-            
-            shadeHit(jitter, 0, n, gbuffersPos.rgb, isect, r, stack[0], false);
-
-            for (int depth = 1; depth < maxDepth; depth++)
-            {
-                if (!traceRay(r, isect, false)) break;
-
-                vec3 hitPos = r.max_t * r.d + r.o;
-
-                if (shadeHit(jitter, depth, n, hitPos, isect, r, stack[depth], stack[depth - 1].hitAlbedo.a < 0.5)) break;
-            }
-
-            // Resolve
-            f16vec3 L = f16vec3(0.0);
-            for (int depth = maxDepth - 1; depth >= 0; depth--)
-            {
-                L += stack[depth].wIn;
-                L *= stack[depth].hitAlbedo.rgb; // hemisphere samples
-            }
-
-            accumulation += vec3(L);
+            stack[i].hitAlbedo = f16vec4(0.0);
+            stack[i].wIn = f16vec3(0.0);
         }
+
+        bool isDelta = false;
+
+        for (int depth = 0; depth < maxDepth; depth++)
+        {
+            if (!traceRay(r, isect, false)) break;
+
+            vec3 hitPos = r.max_t * r.d + r.o;
+
+            if (shadeHit(jitter, depth, n, hitPos, isect, r, stack[depth], isDelta)) break;
+
+            isDelta = isect.c.a < 0.5;
+        }
+
+        // Resolve
+        f16vec3 L = f16vec3(0.0);
+        for (int depth = maxDepth - 1; depth >= 0; depth--)
+        {
+            L += stack[depth].wIn;
+            L *= stack[depth].hitAlbedo.rgb; // hemisphere samples
+        }
+
+        accumulation += vec3(L);
     }
 
     accumulation /= float(numRays);
 
-    vec4 prev = imageLoad(prevAccumulation, ivec2(gl_FragCoord.st));
+    vec4 prev = imageLoad(prevAccumulation, ivec2(launchIndex));
     prev += vec4(accumulation, 1.0);
-    imageStore(currAccumulation, ivec2(gl_FragCoord.st), prev);
-
-    outColor = vec4(prev.rgb / prev.w, 1.0);
+    imageStore(currAccumulation, ivec2(launchIndex), prev);
 }

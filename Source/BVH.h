@@ -24,13 +24,13 @@ public:
 
 struct BVHNode
 {
-    glm::vec3 a;
-    uint16 left;
-    uint16 right;
-    glm::vec3 b;
-    uint16 startPrim;
-    uint16 endPrim;
+    alignas(16) glm::vec3 a;
+    alignas(16) glm::vec3 b;
+    uint32 startPrim;
+    uint32 endPrim;
+    uint32 left;
+    uint32 right;
 };
 
-std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint16>& indices);
-void VisualizeBVH(std::vector<BVHNode>& nodes, std::vector<glm::vec4>& vertices, std::vector<VertexAux>& vertexAux, std::vector<glm::uint16>& indices);
+std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint32>& indices);
+void VisualizeBVH(std::vector<BVHNode>& nodes, std::vector<glm::vec4>& vertices, std::vector<VertexAux>& vertexAux, std::vector<glm::uint32>& indices);

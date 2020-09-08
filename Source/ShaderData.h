@@ -18,6 +18,7 @@ struct ShaderConstants {
 	glm::mat4 viewInvMtx;
 	glm::mat4 projInvMtx;
 	glm::vec2 viewportSize;
+	glm::vec2 viewportBase;
 	uint32 numLights;
 	uint32 numTriangles;
 	uint32 frameIndex;
