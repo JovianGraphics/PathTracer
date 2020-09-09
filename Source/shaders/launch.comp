@@ -1,0 +1,65 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#include "noise.glsl"
+#include "structures.glsl"
+
+layout(binding = 0) uniform Constants {
+    mat4 viewMtx;
+    mat4 projMtx;
+    mat4 viewInvMtx;
+    mat4 projInvMtx;
+    vec2 viewportSize;
+    vec2 viewportBase;
+    uint numLights;
+    uint numTriangles;
+    uint frameIndex;
+    uint numRays;
+	uint currentDepth;
+    uint numBVHNodes;
+};
+
+layout(std430, binding = 4) buffer blueNoiseBuffer
+{
+    uint16_t blueNoise[];
+};
+
+layout(std430, binding = 9) buffer stackBuffer
+{
+    RayStackBuffer stack[];
+};
+
+layout(std430, binding = 10) buffer jobBuffer
+{
+    JobDesc jobGrid[];
+};
+
+void main()
+{
+    uvec2 launchIndex = gl_GlobalInvocationID.xy + uvec2(viewportBase);
+    if (launchIndex.x >= viewportSize.x || launchIndex.y >= viewportSize.y) return;
+    int jitter = (blueNoise[(launchIndex.x & 0xFF) + ((launchIndex.y & 0xFF) << 8)] * 256 + blueNoise[frameIndex]) & 0xFFFF;
+
+    vec4 projPos = vec4(((vec2(launchIndex) + WeylNth(jitter)) / viewportSize) * 2.0 - 1.0, 1.0, 1.0);
+    vec4 viewPos = projInvMtx * projPos; viewPos /= viewPos.w;
+    vec3 worldPos = (viewInvMtx * viewPos).xyz;
+
+    vec4 camPos = viewInvMtx * vec4(0.0, 0.0, 0.0, 1.0); camPos /= camPos.w;
+
+    uint jobIndex = launchIndex.y * uint(viewportSize.x) + launchIndex.x;
+    uint stackIndex = jobIndex * numRays;
+
+    stack[stackIndex].prob = 1.0hf;
+    for (uint i = 1; i < numRays; i++)
+    {
+        stack[stackIndex + i].prob = 0.0hf;
+    }
+
+    stack[stackIndex].rayOrigin = camPos.xyz;
+    stack[stackIndex].rayDirection = normalize(worldPos - camPos.xyz);
+    jobGrid[jobIndex].index = stackIndex;
+}

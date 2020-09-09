@@ -7,6 +7,8 @@
 #include "Himalia/Source/Himalia.h"
 
 #include "trace.comp.h"
+#include "launch.comp.h"
+#include "raysort.comp.h"
 #include "visualize.frag.h"
 #include "visualize.vert.h"
 #include "composite.frag.h"
@@ -45,6 +47,8 @@ public:
 	EuropaBuffer::Ref m_lightsBuffer;
 	EuropaBuffer::Ref m_blueNoiseBuffer;
 	EuropaBuffer::Ref m_bvhBuffer;
+	EuropaBuffer::Ref m_rayStackBuffer;
+	EuropaBuffer::Ref m_jobBuffer;
 
 	EuropaImage::Ref m_depthImage;
 	EuropaImageView::Ref m_depthView;
@@ -53,6 +57,8 @@ public:
 
 	EuropaDescriptorPool::Ref m_descPool;
 	EuropaPipeline::Ref m_pipeline;
+	EuropaPipeline::Ref m_pipelineRayLaunch;
+	EuropaPipeline::Ref m_pipelineRaySort;
 	EuropaPipeline::Ref m_pipelineComposite;
 	EuropaPipeline::Ref m_pipelineVis;
 	EuropaPipeline::Ref m_pipelineVisLine;
@@ -65,9 +71,10 @@ public:
 	std::vector<EuropaImageView::Ref> m_accumulationImageViews;
 
 	uint32 m_frameIndex = 0;
-	int m_numRays = 1;
+	uint32 m_maxDepth = 5;
 	uint32 m_constantsSize;
 	bool m_visualize = false;
+	bool m_raySort = true;
 
 	glm::vec3 m_focusCenter = glm::vec3(0.0, 0.0, 0.0);
 	float m_orbitHeight = 0.5;
@@ -84,9 +91,12 @@ public:
 		// Load Model
 		HimaliaPlyModel plyModel;
 
+		//plyModel.LoadFile("Assets/CBbunny.ply");
 		//plyModel.LoadFile("Assets/CBdragon.ply");
-		plyModel.LoadFile("Assets/CBmonkey.ply");
+		//plyModel.LoadFile("Assets/CBmonkey.ply");
+		//plyModel.LoadFile("Assets/minecraft.ply");
 		//plyModel.LoadFile("Assets/cornellBox.ply");
+		plyModel.LoadFile("Assets/sponza.ply");
 
 		HimaliaVertexProperty vertexFormatAux[] = {
 			HimaliaVertexProperty::Normal,
@@ -102,8 +112,8 @@ public:
 		
 		plyModel.mesh.BuildIndices<uint32>(indices);
 
-		bvhVisStartIndex = indices.size();
-		bvhVisStartVertex = vertexPosition.size();
+		bvhVisStartIndex = uint32(indices.size());
+		bvhVisStartVertex = uint32(vertexPosition.size());
 
 		nodes = BuildBVH(vertexPosition, indices);
 
@@ -174,7 +184,7 @@ public:
 	{
 	};
 
-	AmaltheaBehaviors::OnDestroyDevice f_onCreateSwapChain = [&](Amalthea* amalthea)
+	AmaltheaBehaviors::OnCreateSwapChain f_onCreateSwapChain = [&](Amalthea* amalthea)
 	{
 		// Create Depth buffer
 		EuropaImageInfo depthInfo;
@@ -229,6 +239,21 @@ public:
 			m_accumulationImageViews.push_back(amalthea->m_device->CreateImageView(viewInfo));
 		}
 
+		// Create Ray Stack
+		EuropaBufferInfo rayStackInfo;
+		rayStackInfo.exclusive = true;
+		rayStackInfo.size = uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * m_maxDepth * sizeof(RayStack));
+		rayStackInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage);
+		rayStackInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+		m_rayStackBuffer = amalthea->m_device->CreateBuffer(rayStackInfo);
+
+		EuropaBufferInfo jobBufferInfo;
+		jobBufferInfo.exclusive = true;
+		jobBufferInfo.size = uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob));
+		jobBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage);
+		jobBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+		m_jobBuffer = amalthea->m_device->CreateBuffer(jobBufferInfo);
+
 		// Create Renderpass
 		m_mainRenderPass = amalthea->m_device->CreateRenderPassBuilder();
 		uint32 presentTarget = m_mainRenderPass->AddAttachment(EuropaAttachmentInfo{
@@ -264,13 +289,12 @@ public:
 		descLayout->Storage(2, 1, EuropaShaderStageCompute);
 		descLayout->Storage(3, 1, EuropaShaderStageCompute);
 		descLayout->Storage(4, 1, EuropaShaderStageCompute);
-		descLayout->ImageViewStorage(5, 1, EuropaShaderStageCompute);
+		descLayout->ImageViewStorage(5, 1, EuropaShaderStageAll);
 		descLayout->ImageViewStorage(6, 1, EuropaShaderStageAll);
 		descLayout->Storage(7, 1, EuropaShaderStageCompute);
 		descLayout->Storage(8, 1, EuropaShaderStageCompute);
-		descLayout->InputAttachment(9, 1, EuropaShaderStageCompute);
-		descLayout->InputAttachment(10, 1, EuropaShaderStageCompute);
-		descLayout->InputAttachment(11, 1, EuropaShaderStageCompute);
+		descLayout->Storage(9, 1, EuropaShaderStageAll);
+		descLayout->Storage(10, 1, EuropaShaderStageCompute);
 		descLayout->Build();
 
 		m_pipelineLayout = amalthea->m_device->CreatePipelineLayout(EuropaPipelineLayoutInfo{ 1, 0, &descLayout });
@@ -281,6 +305,22 @@ public:
 			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
 
 			m_pipeline = amalthea->m_device->CreateComputePipeline(stage, m_pipelineLayout);
+		}
+
+		{
+			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_launch_comp, sizeof(shader_spv_launch_comp));
+
+			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
+
+			m_pipelineRayLaunch = amalthea->m_device->CreateComputePipeline(stage, m_pipelineLayout);
+		}
+
+		{
+			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_raysort_comp, sizeof(shader_spv_raysort_comp));
+
+			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
+
+			m_pipelineRaySort = amalthea->m_device->CreateComputePipeline(stage, m_pipelineLayout);
 		}
 
 		{
@@ -396,10 +436,10 @@ public:
 
 		// Constants & Descriptor Pools / Sets
 		EuropaDescriptorPoolSizes descPoolSizes;
-		descPoolSizes.UniformDynamic = 1 * amalthea->m_frames.size();
-		descPoolSizes.StorageImage = 2 * amalthea->m_frames.size();
-		descPoolSizes.Storage = 6 * amalthea->m_frames.size();
-		descPoolSizes.InputAttachments = 3 * amalthea->m_frames.size();
+		descPoolSizes.UniformDynamic = uint32(1 * amalthea->m_frames.size());
+		descPoolSizes.StorageImage = uint32(2 * amalthea->m_frames.size());
+		descPoolSizes.Storage = uint32(8 * amalthea->m_frames.size());
+		descPoolSizes.InputAttachments = uint32(3 * amalthea->m_frames.size());
 
 		m_descPool = amalthea->m_device->CreateDescriptorPool(descPoolSizes, uint32(amalthea->m_frames.size()));
 
@@ -447,16 +487,18 @@ public:
 
 		if (amalthea->m_ioSurface->IsKeyDown('A'))
 		{
-			m_orbitAngle += deltaTime * 3.1415926f * 0.5;
+			m_orbitAngle += deltaTime * 3.1415926f * 0.5f;
 			clear = true;
 		}
 	
 		if (amalthea->m_ioSurface->IsKeyDown('D'))
 		{
-			m_orbitAngle -= deltaTime * 3.1415926f * 0.5;
+			m_orbitAngle -= deltaTime * 3.1415926f * 0.5f;
 			clear = true;
 		}
 
+		m_frameIndex = (m_frameIndex + 1) & 0xFFFF;
+		
 		auto constantsHandle = amalthea->m_streamingBuffer->AllocateTransient(m_constantsSize);
 		ShaderConstants* constants = constantsHandle.Map<ShaderConstants>();
 
@@ -470,16 +512,16 @@ public:
 
 		constants->viewportSize = glm::vec2(amalthea->m_windowSize);
 
-		constants->numLights = lights.size();
+		constants->numLights = uint32(lights.size());
 		constants->numTriangles = bvhVisStartIndex / 3;
-		constants->frameIndex = m_frameIndex++;
-		constants->numRays = m_numRays;
-		constants->numBVHNodes = nodes.size();
-		m_frameIndex = m_frameIndex & 0xFFFF;
+		constants->frameIndex = m_frameIndex;
+		constants->numRays = m_maxDepth;
+		constants->currentDepth = 0;
+		constants->numBVHNodes = uint32(nodes.size());
 
 		constantsHandle.Unmap();
 
-		m_descSets[ctx.frameIndex]->SetUniformBufferDynamic(constantsHandle.buffer, 0, constantsHandle.offset + m_constantsSize, 0, 0);
+		m_descSets[ctx.frameIndex]->SetUniformBufferDynamic(constantsHandle.buffer, 0, constantsHandle.offset + m_constantsSize * m_maxDepth, 0, 0);
 		if (!m_visualize)
 		{
 			m_descSets[ctx.frameIndex]->SetStorage(m_lightsBuffer, 0, uint32(lights.size() * sizeof(Light)), 1, 0);
@@ -490,6 +532,8 @@ public:
 			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[ctx.frameIndex], EuropaImageLayout::General, 6, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_vertexPosBuffer, 0, uint32(bvhVisStartVertex * sizeof(glm::vec4)), 7, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_bvhBuffer, 0, uint32(nodes.size() * sizeof(BVHNode)), 8, 0);
+			m_descSets[ctx.frameIndex]->SetStorage(m_rayStackBuffer, 0, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * m_maxDepth * sizeof(RayStack)), 9, 0);
+			m_descSets[ctx.frameIndex]->SetStorage(m_jobBuffer, 0, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob)), 10, 0);
 		}
 
 		EuropaClearValue clearValue[2];
@@ -499,9 +543,68 @@ public:
 		if (!m_visualize)
 		{
 			ctx.cmdlist->BindDescriptorSetsDynamicOffsets(EuropaPipelineBindPoint::Compute, m_pipelineLayout, m_descSets[ctx.frameIndex], 0, constantsHandle.offset);
-			ctx.cmdlist->BindCompute(m_pipeline);
-			ctx.cmdlist->Dispatch(ceil(float(amalthea->m_windowSize.x) / 8.0f), ceil(float(amalthea->m_windowSize.y) / 8.0f), 1);
-			ctx.cmdlist->Barrier(m_accumulationImages[ctx.frameIndex], EuropaAccessNone, EuropaAccessNone, EuropaImageLayout::General, EuropaImageLayout::General, EuropaPipelineStageBottomOfPipe, EuropaPipelineStageFragmentShader);
+			ctx.cmdlist->BindCompute(m_pipelineRayLaunch);
+			ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 16.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 16.0f)), 1);
+			
+			for (uint32 d = 0; d < m_maxDepth; d++)
+			{
+				if (d != 0)
+				{
+					constantsHandle = amalthea->m_streamingBuffer->AllocateTransient(m_constantsSize);
+					ShaderConstants* constants = constantsHandle.Map<ShaderConstants>();
+
+					constants->viewMtx = glm::lookAt(glm::vec3(cos(m_orbitAngle) * m_orbitRadius, m_orbitHeight, sin(m_orbitAngle) * m_orbitRadius), m_focusCenter, glm::vec3(0.0, 1.0, 0.0));
+					constants->projMtx = glm::perspective(glm::radians(60.0f), float(amalthea->m_windowSize.x) / (amalthea->m_windowSize.y), 0.01f, 256.0f);
+
+					constants->projMtx[1].y = -constants->projMtx[1].y;
+
+					constants->viewInvMtx = glm::inverse(constants->viewMtx);
+					constants->projInvMtx = glm::inverse(constants->projMtx);
+
+					constants->viewportSize = glm::vec2(amalthea->m_windowSize);
+
+					constants->numLights = uint32(lights.size());
+					constants->numTriangles = bvhVisStartIndex / 3;
+					constants->frameIndex = m_frameIndex;
+					constants->numRays = m_maxDepth;
+					constants->currentDepth = d;
+					constants->numBVHNodes = uint32(nodes.size());
+
+					constantsHandle.Unmap();
+				
+					ctx.cmdlist->BindDescriptorSetsDynamicOffsets(EuropaPipelineBindPoint::Compute, m_pipelineLayout, m_descSets[ctx.frameIndex], 0, constantsHandle.offset);
+				}
+
+				ctx.cmdlist->Barrier(
+					m_rayStackBuffer, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * m_maxDepth * sizeof(RayStack)), 0,
+					EuropaAccessShaderWrite, EuropaAccessShaderRead,
+					EuropaPipelineStageComputeShader, EuropaPipelineStageComputeShader
+				);
+				ctx.cmdlist->BindCompute(m_pipeline);
+				ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 8.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 8.0f)), 1);
+
+				if (m_raySort)
+				{
+					ctx.cmdlist->Barrier(
+						m_jobBuffer, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob)), 0,
+						EuropaAccessShaderWrite, EuropaAccessShaderRead,
+						EuropaPipelineStageComputeShader, EuropaPipelineStageComputeShader
+					); 
+					ctx.cmdlist->BindCompute(m_pipelineRaySort);
+					ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 32.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 32.0f)), 1);
+					ctx.cmdlist->Barrier(
+						m_jobBuffer, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob)), 0,
+						EuropaAccessShaderWrite, EuropaAccessShaderRead,
+						EuropaPipelineStageComputeShader, EuropaPipelineStageComputeShader
+					); 
+				}
+			}
+			
+			ctx.cmdlist->Barrier(
+				m_accumulationImages[ctx.frameIndex],
+				EuropaAccessNone, EuropaAccessShaderRead, EuropaImageLayout::General, EuropaImageLayout::General,
+				EuropaPipelineStageBottomOfPipe, EuropaPipelineStageFragmentShader
+			);
 		}
 
 		ctx.cmdlist->BeginRenderpass(m_mainRenderPass, m_frameBuffers[ctx.frameIndex], glm::ivec2(0), glm::uvec2(amalthea->m_windowSize), 2, clearValue);
@@ -514,7 +617,7 @@ public:
 			ctx.cmdlist->BindIndexBuffer(m_indexBuffer, 0, EuropaImageFormat::R32UI);
 			ctx.cmdlist->DrawIndexed(bvhVisStartIndex, 1, 0, 0, 0);
 			ctx.cmdlist->BindPipeline(m_pipelineVisLine);
-			ctx.cmdlist->DrawIndexed(indices.size() - bvhVisStartIndex, 1, bvhVisStartIndex, bvhVisStartVertex, 0);
+			ctx.cmdlist->DrawIndexed(uint32(indices.size()) - bvhVisStartIndex, 1, bvhVisStartIndex, bvhVisStartVertex, 0);
 		}
 		else
 		{
@@ -535,9 +638,11 @@ public:
 
 			ImGui::DragFloat3("Center", &m_focusCenter.x);
 			
-			ImGui::Checkbox("Visualize Mode", &m_visualize);
+			ImGui::SliderInt("Max Depth", (int*)&m_maxDepth, 1, 5);
 
-			ImGui::SliderInt("", &m_numRays, 1, 128, "%d Rays Per Frame");
+			ImGui::Checkbox("Ray Sorting", &m_raySort);
+			ImGui::SameLine();
+			ImGui::Checkbox("Visualization", &m_visualize);
 			ImGui::SameLine();
 			if (ImGui::Button("Reset Image")) clear = true;
 

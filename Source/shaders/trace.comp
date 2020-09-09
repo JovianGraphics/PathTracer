@@ -1,0 +1,218 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "noise.glsl"
+#include "structures.glsl"
+
+layout(binding = 0) uniform Constants {
+    mat4 viewMtx;
+    mat4 projMtx;
+    mat4 viewInvMtx;
+    mat4 projInvMtx;
+    vec2 viewportSize;
+    vec2 viewportBase;
+    uint numLights;
+    uint numTriangles;
+    uint frameIndex;
+    uint numRays;
+	uint currentDepth;
+    uint numBVHNodes;
+};
+
+layout(std430, binding = 1) buffer lightBuffer
+{
+    Light lights[];
+};
+
+layout(std430, binding = 2) buffer vertexBufferAux
+{
+    VertexAux vertexAux[];
+};
+
+layout(std430, binding = 3) buffer indexBuffer
+{
+    layout(align = 8) uint indicies[];
+};
+
+layout(std430, binding = 4) buffer blueNoiseBuffer
+{
+    uint16_t blueNoise[];
+};
+
+layout(std430, binding = 7) buffer vertexBufferPos
+{
+    vec4 vertices[];
+};
+
+layout(std430, binding = 8) buffer bvhBuffer
+{
+    BVHNode bvh[];
+};
+
+layout(std430, binding = 9) buffer stackBuffer
+{
+    RayStackBuffer rayStack[];
+};
+
+layout(std430, binding = 10) buffer jobBuffer
+{
+    JobDesc jobGrid[];
+};
+
+#include "intersections.glsl"
+
+struct RayStack
+{
+    f16vec4 hitAlbedo;
+    f16vec3 wIn;
+};
+
+bool shadeHit(int jitter, int depth, vec3 hitPos, inout Intersection isect, inout Ray r, out f16vec3 normal, out f16vec4 albedo, out f16vec3 wIn, out float16_t prob, in bool isLastHitDelta)
+{
+    wIn = f16vec3(0.0);
+
+    f16vec4 c1 = f16vec4(vertexAux[isect.i1].color) * (1.0hf / 255.0hf);
+    f16vec4 c2 = f16vec4(vertexAux[isect.i2].color) * (1.0hf / 255.0hf);
+    f16vec4 c3 = f16vec4(vertexAux[isect.i3].color) * (1.0hf / 255.0hf);
+
+    f16vec3 n1 = f16vec3(vertexAux[isect.i1].normal).xyz;
+    f16vec3 n2 = f16vec3(vertexAux[isect.i2].normal).xyz;
+    f16vec3 n3 = f16vec3(vertexAux[isect.i3].normal).xyz;
+
+    normal = isect.bary.x * n1 + isect.bary.y * n2 + isect.bary.z * n3;
+    albedo = isect.bary.x * c1 + isect.bary.y * c2 + isect.bary.z * c3;
+    albedo.rgb = pow(albedo.rgb, f16vec3(2.2));
+
+    if (dot(normal, f16vec3(r.d)) > 0.0) normal = -normal;
+
+    // Direct Lighting
+    for (int i = 0; i < numLights; i++)
+    {
+        vec3 lightPos = lights[i].pos.xyz;
+
+        vec3 posDiff = lightPos - hitPos;
+        float dist = length(posDiff);
+        vec3 lightDir = posDiff / dist;
+                    
+        Intersection isectDirectLighting;
+        Ray rLight;
+
+        rLight.o = hitPos;
+        rLight.d = lightDir;
+        rLight.rcpD = f16vec3(1.0 / rLight.d);
+        rLight.min_t = 0.00005;
+        rLight.max_t = dist - 0.00005;
+
+        if (!traceRay(rLight, isectDirectLighting, true))
+        {
+            f16vec3 lightRadiance = f16vec3(lights[i].radiance.rgb);
+    
+            float16_t falloff = float16_t(1.0f / (dist * dist + 1.0f)) * max(0.0hf, dot(normal, f16vec3(lightDir)));
+
+            // For delta material, this is kind of a hack (introduce a small bias), but point light source doesn't exist anyways ...
+            if (albedo.a > 0.5)
+                wIn += falloff * albedo.rgb * lightRadiance;
+            else
+                wIn += float16_t(dot(lightDir, r.d) > 0.995) * lightRadiance;
+        }
+    }
+
+    // Secondary Contribution
+    f16vec2 gridSample = WeylNth(int(jitter * numRays + depth));
+    vec3 nextDir = vec3(to_coord_space(normal, cosineHemisphere(gridSample)));
+
+    if (albedo.a < 0.5)
+    {
+        float16_t ior = 1.3hf;
+        if (depth > 0 && isLastHitDelta) ior = 1.0hf / 1.3hf;
+
+        nextDir = vec3(refract(f16vec3(r.d), normal, ior));
+
+        if (nextDir == vec3(0.0)) nextDir = vec3(reflect(f16vec3(r.d), normal));
+
+        // Prevent double counting the transmittance
+        albedo = sqrt(albedo);
+    }
+    else if (depth > 0)
+    {
+        prob = 2.0hf;
+        if (gridSample.x > 0.5) return false;
+    }
+
+    r.o = hitPos;
+    r.d = nextDir;
+    r.rcpD = f16vec3(1.0 / r.d);
+    r.min_t = 0.00005;
+    r.max_t = 10000.0;
+
+    return true;
+}
+
+void main() {
+    uint jobIndex = gl_GlobalInvocationID.y * uint(viewportSize.x) + gl_GlobalInvocationID.x;
+    uint stackIndex = jobGrid[jobIndex].index;
+
+    if (stackIndex == 0xFFFFFFFF) return;
+
+    uint stackGridIndex = stackIndex / numRays;
+    uvec2 launchIndex = uvec2(stackGridIndex % uint(viewportSize.x), stackGridIndex / uint(viewportSize.y));
+    
+    // if (launchIndex.x >= viewportSize.x || launchIndex.y >= viewportSize.y) return;
+    int jitter = (blueNoise[(launchIndex.x & 0xFF) + ((launchIndex.y & 0xFF) << 8)] * 256 + blueNoise[frameIndex]) & 0xFFFF;
+
+    vec3 accumulation = vec3(0.0);
+
+    Intersection isect;
+    Ray r;
+
+    r.o = rayStack[stackIndex].rayOrigin;
+    r.d = rayStack[stackIndex].rayDirection;
+    r.rcpD = f16vec3(1.0 / r.d);
+    r.min_t = 0.00001;
+    r.max_t = 100000.0;
+
+    if (!traceRay(r, isect, false))
+    {
+        rayStack[stackIndex].prob = 0.0hf;
+        return;
+    }
+
+    vec3 hitPos = r.max_t * r.d + r.o;
+
+    bool isDelta = false;
+
+    if (currentDepth == 0)
+    {
+        isDelta = rayStack[stackIndex - 1].hitAlbedo.a < 0.5;
+    }
+
+    f16vec3 normal;
+    f16vec4 albedo;
+    f16vec3 wIn;
+    float16_t prob;
+
+    if (shadeHit(jitter, int(currentDepth), hitPos, isect, r, normal, albedo, wIn, prob, isDelta) && currentDepth != uint(numRays - 1))
+    {
+        // Prepare next ray
+        rayStack[stackIndex + 1].rayOrigin = r.o;
+        rayStack[stackIndex + 1].rayDirection = r.d;
+
+        rayStack[stackIndex + 1].hitAlbedo = f16vec4(0.0);
+
+        rayStack[stackIndex + 1].prob = 1.0hf;
+
+        jobGrid[jobIndex].index = stackIndex + 1;
+    }
+    else
+    {
+        rayStack[stackIndex].prob = prob;
+        jobGrid[jobIndex].index = 0xFFFFFFFF;
+    }
+
+    rayStack[stackIndex].hitAlbedo = albedo;
+    rayStack[stackIndex].wIn = wIn;
+}

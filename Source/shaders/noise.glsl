@@ -12,32 +12,32 @@ float bayer2(vec2 a)
 
 float bayer_4x4(in vec2 pos, in vec2 view)
 {
-	  return bayer4(pos * view);
+	return bayer4(pos * view);
 }
 
 float bayer_8x8(in vec2 pos, in vec2 view)
 {
-	  return bayer8(pos * view);
+	return bayer8(pos * view);
 }
 
 float bayer_16x16(in vec2 pos, in vec2 view)
 {
-	  return bayer16(pos * view);
+	return bayer16(pos * view);
 }
 
 float bayer_32x32(in vec2 pos, in vec2 view)
 {
-	  return bayer32(pos * view);
+	return bayer32(pos * view);
 }
 
 float bayer_64x64(in vec2 pos, in vec2 view)
 {
-	  return bayer64(pos * view);
+	return bayer64(pos * view);
 }
 
 f16vec2 WeylNth(int n)
 {
-	  return f16vec2(fract(vec2(n * 12664745, n * 9560333) / exp2(24.0)));
+	return f16vec2(fract(vec2(n * 12664745, n * 9560333) / exp2(24.0)));
 }
 
 f16vec3 cosineHemisphere(f16vec2 i)

@@ -16,6 +16,8 @@ public:
 
     void Extend(BBox other);
     void Extend(glm::vec3 p);
+    BBox Intersect(BBox other);
+    glm::vec3 GetSize();
 
     BBox() { empty = true; }
     BBox(glm::vec3 p) : a(p), b(p) {}
@@ -26,10 +28,9 @@ struct BVHNode
 {
     alignas(16) glm::vec3 a;
     alignas(16) glm::vec3 b;
-    uint32 startPrim;
-    uint32 endPrim;
-    uint32 left;
-    uint32 right;
+    int32 right;
+    glm::ivec3 index;
+    int32 next;
 };
 
 std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint32>& indices);

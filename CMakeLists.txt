@@ -25,40 +25,56 @@ endif()
 add_custom_command(
 	OUTPUT trace.comp.h
 	PRE_BUILD
-	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/trace.comp output=${CMAKE_BINARY_DIR}/generated/trace.comp.h
-	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/trace.comp
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/shaders/trace.comp output=${CMAKE_BINARY_DIR}/generated/trace.comp.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/shaders/trace.comp
+)
+
+add_custom_command(
+	OUTPUT launch.comp.h
+	PRE_BUILD
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/shaders/launch.comp output=${CMAKE_BINARY_DIR}/generated/launch.comp.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/shaders/launch.comp
+)
+
+add_custom_command(
+	OUTPUT raysort.comp.h
+	PRE_BUILD
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/shaders/raysort.comp output=${CMAKE_BINARY_DIR}/generated/raysort.comp.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/shaders/raysort.comp
 )
 
 add_custom_command(
 	OUTPUT visualize.frag.h
 	PRE_BUILD
-	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/visualize.frag output=${CMAKE_BINARY_DIR}/generated/visualize.frag.h
-	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/visualize.frag
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/shaders/visualize.frag output=${CMAKE_BINARY_DIR}/generated/visualize.frag.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/shaders/visualize.frag
 )
 
 add_custom_command(
 	OUTPUT visualize.vert.h
 	PRE_BUILD
-	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/visualize.vert output=${CMAKE_BINARY_DIR}/generated/visualize.vert.h
-	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/visualize.vert
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/shaders/visualize.vert output=${CMAKE_BINARY_DIR}/generated/visualize.vert.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/shaders/visualize.vert
 )
 
 add_custom_command(
 	OUTPUT composite.frag.h
 	PRE_BUILD
-	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/composite.frag output=${CMAKE_BINARY_DIR}/generated/composite.frag.h
-	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/composite.frag
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/shaders/composite.frag output=${CMAKE_BINARY_DIR}/generated/composite.frag.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/shaders/composite.frag
 )
 
 add_custom_command(
 	OUTPUT composite.vert.h
 	PRE_BUILD
-	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/composite.vert output=${CMAKE_BINARY_DIR}/generated/composite.vert.h
-	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/composite.vert
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/shaders/composite.vert output=${CMAKE_BINARY_DIR}/generated/composite.vert.h
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/shaders/composite.vert
 )
 
 add_custom_target(Shaders ALL DEPENDS
 	trace.comp.h
+	launch.comp.h
+	raysort.comp.h
 	visualize.frag.h
 	visualize.vert.h
 	composite.frag.h

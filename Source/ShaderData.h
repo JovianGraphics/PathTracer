@@ -23,6 +23,7 @@ struct ShaderConstants {
 	uint32 numTriangles;
 	uint32 frameIndex;
 	uint32 numRays;
+	uint32 currentDepth;
 	uint32 numBVHNodes;
 };
 
@@ -30,4 +31,17 @@ struct Light
 {
 	alignas(16) glm::vec3 pos;
 	alignas(16) glm::vec3 radiance;
+};
+
+struct RayStack
+{
+	alignas(16) glm::vec3 rayOrigin;
+	alignas(16) glm::vec3 rayDirection;
+	alignas(8) glm::u16vec4 hitAlbedo;
+	alignas(8) glm::u16vec3 wIn;
+};
+
+struct RayJob
+{
+	uint32 index;
 };
