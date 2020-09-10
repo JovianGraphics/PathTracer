@@ -57,7 +57,6 @@ struct BuildBVHTask
     uint32 start;
     uint32 end;
     uint32 depth;
-    int32 next;
     bool isRight;
     int32 writeTo;
 };
@@ -67,7 +66,7 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
     std::vector<BVHNode> nodes;
     std::vector<BuildBVHTask> tasks;
 
-    tasks.push_back({ 0, uint32(indices.size()), 0, 0, false, 0 });
+    tasks.push_back({ 0, uint32(indices.size()), 0, false, 0 });
 
     uint32 maxDepth = 0;
 
@@ -81,7 +80,7 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
         if (task.isRight)
         {
             nodes[task.writeTo].right = index;
-            nodes[task.writeTo].next = index;
+            //nodes[task.writeTo].next = index;
         }
 
         nodes.push_back(BVHNode{});
@@ -113,9 +112,8 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
             if (end - start != 3) throw std::runtime_error("Non-triangle found in primitives");
 
             node.right = -int32(end);
-            node.next = index + 1;
 
-            node.index = glm::ivec3(indices[start], indices[start + 1], indices[start + 2]);
+            node.index = glm::ivec4(indices[start], indices[start + 1], indices[start + 2], 1);
 
             continue;
         }
@@ -126,6 +124,7 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
         float totalArea = dot(bboxSize, bboxSize);
         float maxScore = -(1.0f + 2.0f * (end - start) / 3);
         float selectedRatio = 0.5;
+        bool leftFirst = true;
 
         const glm::vec3 availableAxes[] = {
             glm::vec3(1.0, 0.0, 0.0),
@@ -224,6 +223,7 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
                     maxScore = score;
                     selectedRatio = splitRatio[i];
                     selectedAxis = axis;
+                    leftFirst = pA < pB;
                 }
             }
         }
@@ -271,13 +271,21 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
 
         if (leftPrims.size() == 0 || rightPrims.size() == 0)
         {
-            tasks.push_back({ center, end, task.depth + 1, task.next, true, index });
-            tasks.push_back({ start, center, task.depth + 1, -1, false, index });
+            tasks.push_back({ center, end, task.depth + 1, true, index });
+            tasks.push_back({ start, center, task.depth + 1, false, index });
         }
         else
         {
-            tasks.push_back({ start + uint32(leftPrims.size()), end, task.depth + 1, task.next, true, index });
-            tasks.push_back({ start, start + uint32(leftPrims.size()), task.depth + 1, -1, false, index });
+            if (leftFirst)
+            {
+                tasks.push_back({ start + uint32(leftPrims.size()), end, task.depth + 1, true, index });
+                tasks.push_back({ start, start + uint32(leftPrims.size()), task.depth + 1, false, index });
+            }
+            else
+            {
+                tasks.push_back({ start, start + uint32(leftPrims.size()), task.depth + 1, true, index });
+                tasks.push_back({ start + uint32(leftPrims.size()), end, task.depth + 1, false, index });
+            }
         }
     }
 

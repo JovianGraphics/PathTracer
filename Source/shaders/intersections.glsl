@@ -29,7 +29,7 @@ bool intersectBBox(Ray r, vec3 _a, vec3 _b)
     return (tmax > 0.0hf || tmin > 0.0hf) && tmax >= tmin && r.min_t < tmax && r.max_t > tmin;
 }
 
-bool intersect(inout Ray r, Triangle tri, inout Intersection isect, bool stopIfHit)
+bool intersect(inout Ray r, Triangle tri, inout Intersection isect)
 {
     vec3 e1 = tri.p2 - tri.p1;
     vec3 e2 = tri.p3 - tri.p1;
@@ -54,31 +54,6 @@ bool intersect(inout Ray r, Triangle tri, inout Intersection isect, bool stopIfH
     return true;
 }
 
-// NOT USED
-bool traceRayTriangles(inout Ray r, uint start, uint end, out Intersection isect, bool stopIfHit)
-{
-    bool hit = false;
-
-    for (uint i = start; i < end; i += 3)
-    {
-        Triangle tri;
-
-        tri.i1 = int(indicies[i   ]);
-        tri.i2 = int(indicies[i + 1]);
-        tri.i3 = int(indicies[i + 2]);
-
-        tri.p1 = vertices[tri.i1].xyz;
-        tri.p2 = vertices[tri.i2].xyz;
-        tri.p3 = vertices[tri.i3].xyz;
-
-        hit = intersect(r, tri, isect, stopIfHit) || hit;
-
-        if (hit && stopIfHit) return true;
-    }
-
-    return hit;
-}
-
 bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
 {
     bool hit = false;
@@ -100,15 +75,13 @@ bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
                 tri.i2 = node.index.y;
                 tri.i3 = node.index.z;
 
-                tri.p1 = vertices[tri.i1].xyz;
-                tri.p2 = vertices[tri.i2].xyz;
-                tri.p3 = vertices[tri.i3].xyz;
+                tri.p1 = texelFetch(vertices, tri.i1).xyz;
+                tri.p2 = texelFetch(vertices, tri.i2).xyz;
+                tri.p3 = texelFetch(vertices, tri.i3).xyz;
 
-                hit = intersect(r, tri, isect, stopIfHit) || hit;
+                hit = intersect(r, tri, isect) || hit;
 
                 if (hit && stopIfHit) return true;
-
-                node = bvh[node.next];
             }
 
             index++;

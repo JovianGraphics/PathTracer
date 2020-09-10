@@ -19,7 +19,6 @@ layout(binding = 0) uniform Constants {
     uint numTriangles;
     uint frameIndex;
     uint numRays;
-	uint currentDepth;
     uint numBVHNodes;
 };
 
@@ -61,5 +60,6 @@ void main()
 
     stack[stackIndex].rayOrigin = camPos.xyz;
     stack[stackIndex].rayDirection = normalize(worldPos - camPos.xyz);
+    stack[stackIndex].currentDepth = 0;
     jobGrid[jobIndex].index = stackIndex;
 }

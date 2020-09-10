@@ -19,7 +19,6 @@ layout(binding = 0) uniform Constants {
     uint numTriangles;
     uint frameIndex;
     uint numRays;
-	uint currentDepth;
     uint numBVHNodes;
 };
 
@@ -33,20 +32,12 @@ layout(std430, binding = 2) buffer vertexBufferAux
     VertexAux vertexAux[];
 };
 
-layout(std430, binding = 3) buffer indexBuffer
-{
-    layout(align = 8) uint indicies[];
-};
-
 layout(std430, binding = 4) buffer blueNoiseBuffer
 {
     uint16_t blueNoise[];
 };
 
-layout(std430, binding = 7) buffer vertexBufferPos
-{
-    vec4 vertices[];
-};
+layout(binding = 7) uniform samplerBuffer vertices;
 
 layout(std430, binding = 8) buffer bvhBuffer
 {
@@ -137,10 +128,10 @@ bool shadeHit(int jitter, int depth, vec3 hitPos, inout Intersection isect, inou
         // Prevent double counting the transmittance
         albedo = sqrt(albedo);
     }
-    else if (depth > 0)
+    else
     {
-        prob = 2.0hf;
-        if (gridSample.x > 0.5) return false;
+        prob = 1.0hf / 0.7hf;
+        if (gridSample.x > 0.7) return false;
     }
 
     r.o = hitPos;
@@ -157,6 +148,8 @@ void main() {
     uint stackIndex = jobGrid[jobIndex].index;
 
     if (stackIndex == 0xFFFFFFFF) return;
+
+    uint currentDepth = rayStack[stackIndex].currentDepth;
 
     uint stackGridIndex = stackIndex / numRays;
     uvec2 launchIndex = uvec2(stackGridIndex % uint(viewportSize.x), stackGridIndex / uint(viewportSize.y));
@@ -200,6 +193,7 @@ void main() {
         // Prepare next ray
         rayStack[stackIndex + 1].rayOrigin = r.o;
         rayStack[stackIndex + 1].rayDirection = r.d;
+        rayStack[stackIndex + 1].currentDepth = currentDepth + 1;
 
         rayStack[stackIndex + 1].hitAlbedo = f16vec4(0.0);
 

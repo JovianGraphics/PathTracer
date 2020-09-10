@@ -42,6 +42,7 @@ public:
 	Amalthea m_amalthea;
 
 	EuropaBuffer::Ref m_vertexPosBuffer;
+	EuropaBufferView::Ref m_vertexPosBufferView;
 	EuropaBuffer::Ref m_vertexBuffer;
 	EuropaBuffer::Ref m_indexBuffer;
 	EuropaBuffer::Ref m_lightsBuffer;
@@ -132,16 +133,18 @@ public:
 		EuropaBufferInfo vertexBufferPosInfo;
 		vertexBufferPosInfo.exclusive = true;
 		vertexBufferPosInfo.size = uint32(vertexPosition.size() * sizeof(glm::vec4));
-		vertexBufferPosInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageVertex | EuropaBufferUsageTransferDst);
+		vertexBufferPosInfo.usage = EuropaBufferUsage(EuropaBufferUsageUniformTexel | EuropaBufferUsageVertex | EuropaBufferUsageTransferDst);
 		vertexBufferPosInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_vertexPosBuffer = amalthea->m_device->CreateBuffer(vertexBufferPosInfo);
 
 		amalthea->m_transferUtil->UploadToBufferEx(m_vertexPosBuffer, vertexPosition.data(), uint32(vertexPosition.size()));
+
+		m_vertexPosBufferView = amalthea->m_device->CreateBufferView(m_vertexPosBuffer, vertexBufferPosInfo.size, 0, EuropaImageFormat::RGBA32F);
 		
 		EuropaBufferInfo indexBufferInfo;
 		indexBufferInfo.exclusive = true;
 		indexBufferInfo.size = uint32(indices.size() * sizeof(uint32));
-		indexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageIndex | EuropaBufferUsageTransferDst);
+		indexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageIndex | EuropaBufferUsageTransferDst);
 		indexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_indexBuffer = amalthea->m_device->CreateBuffer(indexBufferInfo);
 
@@ -291,7 +294,7 @@ public:
 		descLayout->Storage(4, 1, EuropaShaderStageCompute);
 		descLayout->ImageViewStorage(5, 1, EuropaShaderStageAll);
 		descLayout->ImageViewStorage(6, 1, EuropaShaderStageAll);
-		descLayout->Storage(7, 1, EuropaShaderStageCompute);
+		descLayout->BufferViewUniform(7, 1, EuropaShaderStageCompute);
 		descLayout->Storage(8, 1, EuropaShaderStageCompute);
 		descLayout->Storage(9, 1, EuropaShaderStageAll);
 		descLayout->Storage(10, 1, EuropaShaderStageCompute);
@@ -437,9 +440,10 @@ public:
 		// Constants & Descriptor Pools / Sets
 		EuropaDescriptorPoolSizes descPoolSizes;
 		descPoolSizes.UniformDynamic = uint32(1 * amalthea->m_frames.size());
+		descPoolSizes.UniformTexel = uint32(1 * amalthea->m_frames.size());
+		descPoolSizes.StorageTexel = uint32(1 * amalthea->m_frames.size());
 		descPoolSizes.StorageImage = uint32(2 * amalthea->m_frames.size());
 		descPoolSizes.Storage = uint32(8 * amalthea->m_frames.size());
-		descPoolSizes.InputAttachments = uint32(3 * amalthea->m_frames.size());
 
 		m_descPool = amalthea->m_device->CreateDescriptorPool(descPoolSizes, uint32(amalthea->m_frames.size()));
 
@@ -516,21 +520,19 @@ public:
 		constants->numTriangles = bvhVisStartIndex / 3;
 		constants->frameIndex = m_frameIndex;
 		constants->numRays = m_maxDepth;
-		constants->currentDepth = 0;
 		constants->numBVHNodes = uint32(nodes.size());
 
 		constantsHandle.Unmap();
 
-		m_descSets[ctx.frameIndex]->SetUniformBufferDynamic(constantsHandle.buffer, 0, constantsHandle.offset + m_constantsSize * m_maxDepth, 0, 0);
+		m_descSets[ctx.frameIndex]->SetUniformBufferDynamic(constantsHandle.buffer, 0, constantsHandle.offset + m_constantsSize, 0, 0);
 		if (!m_visualize)
 		{
 			m_descSets[ctx.frameIndex]->SetStorage(m_lightsBuffer, 0, uint32(lights.size() * sizeof(Light)), 1, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_vertexBuffer, 0, uint32(bvhVisStartVertex * sizeof(VertexAux)), 2, 0);
-			m_descSets[ctx.frameIndex]->SetStorage(m_indexBuffer, 0, uint32(bvhVisStartIndex * sizeof(uint32)), 3, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_blueNoiseBuffer, 0, sizeof(_blueNoise), 4, 0);
 			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[(ctx.frameIndex - 1) % amalthea->m_frames.size()], EuropaImageLayout::General, 5, 0);
 			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[ctx.frameIndex], EuropaImageLayout::General, 6, 0);
-			m_descSets[ctx.frameIndex]->SetStorage(m_vertexPosBuffer, 0, uint32(bvhVisStartVertex * sizeof(glm::vec4)), 7, 0);
+			m_descSets[ctx.frameIndex]->SetBufferViewUniform(m_vertexPosBufferView, 7, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_bvhBuffer, 0, uint32(nodes.size() * sizeof(BVHNode)), 8, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_rayStackBuffer, 0, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * m_maxDepth * sizeof(RayStack)), 9, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_jobBuffer, 0, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob)), 10, 0);
@@ -548,33 +550,6 @@ public:
 			
 			for (uint32 d = 0; d < m_maxDepth; d++)
 			{
-				if (d != 0)
-				{
-					constantsHandle = amalthea->m_streamingBuffer->AllocateTransient(m_constantsSize);
-					ShaderConstants* constants = constantsHandle.Map<ShaderConstants>();
-
-					constants->viewMtx = glm::lookAt(glm::vec3(cos(m_orbitAngle) * m_orbitRadius, m_orbitHeight, sin(m_orbitAngle) * m_orbitRadius), m_focusCenter, glm::vec3(0.0, 1.0, 0.0));
-					constants->projMtx = glm::perspective(glm::radians(60.0f), float(amalthea->m_windowSize.x) / (amalthea->m_windowSize.y), 0.01f, 256.0f);
-
-					constants->projMtx[1].y = -constants->projMtx[1].y;
-
-					constants->viewInvMtx = glm::inverse(constants->viewMtx);
-					constants->projInvMtx = glm::inverse(constants->projMtx);
-
-					constants->viewportSize = glm::vec2(amalthea->m_windowSize);
-
-					constants->numLights = uint32(lights.size());
-					constants->numTriangles = bvhVisStartIndex / 3;
-					constants->frameIndex = m_frameIndex;
-					constants->numRays = m_maxDepth;
-					constants->currentDepth = d;
-					constants->numBVHNodes = uint32(nodes.size());
-
-					constantsHandle.Unmap();
-				
-					ctx.cmdlist->BindDescriptorSetsDynamicOffsets(EuropaPipelineBindPoint::Compute, m_pipelineLayout, m_descSets[ctx.frameIndex], 0, constantsHandle.offset);
-				}
-
 				ctx.cmdlist->Barrier(
 					m_rayStackBuffer, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * m_maxDepth * sizeof(RayStack)), 0,
 					EuropaAccessShaderWrite, EuropaAccessShaderRead,
@@ -583,7 +558,7 @@ public:
 				ctx.cmdlist->BindCompute(m_pipeline);
 				ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 8.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 8.0f)), 1);
 
-				if (m_raySort)
+				if (m_raySort && d != m_maxDepth - 1)
 				{
 					ctx.cmdlist->Barrier(
 						m_jobBuffer, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob)), 0,
@@ -591,7 +566,7 @@ public:
 						EuropaPipelineStageComputeShader, EuropaPipelineStageComputeShader
 					); 
 					ctx.cmdlist->BindCompute(m_pipelineRaySort);
-					ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 32.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 32.0f)), 1);
+					ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 64.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 32.0f)), 1);
 					ctx.cmdlist->Barrier(
 						m_jobBuffer, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob)), 0,
 						EuropaAccessShaderWrite, EuropaAccessShaderRead,

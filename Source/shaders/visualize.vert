@@ -7,6 +7,7 @@ layout(binding = 0) uniform Constants {
     mat4 viewInvMtx;
     mat4 projInvMtx;
     vec2 viewportSize;
+    vec2 viewportBase;
     uint numLights;
     uint numTriangles;
     uint frameIndex;

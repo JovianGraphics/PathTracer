@@ -34,17 +34,17 @@ struct Intersection
 struct BVHNode
 {
     vec3 a;
-    int left;
+    int next;
     vec3 b;
     int right;
     ivec3 index;
-    int next;
 };
 
 struct RayStackBuffer
 {
 	vec3 rayDirection;
     vec3 rayOrigin;
+    uint currentDepth;
 	f16vec4 hitAlbedo;
     f16vec3 wIn;
     float16_t prob;

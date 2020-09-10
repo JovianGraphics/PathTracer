@@ -23,7 +23,6 @@ struct ShaderConstants {
 	uint32 numTriangles;
 	uint32 frameIndex;
 	uint32 numRays;
-	uint32 currentDepth;
 	uint32 numBVHNodes;
 };
 

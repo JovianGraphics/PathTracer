@@ -18,7 +18,6 @@ layout(binding = 0) uniform Constants {
     uint numTriangles;
     uint frameIndex;
     uint numRays;
-	uint currentDepth;
     uint numBVHNodes;
 };
 
@@ -36,21 +35,40 @@ void main()
 {
     uint count = 0;
 
-    uint baseIndex = gl_GlobalInvocationID.y * uint(viewportSize.x) + gl_GlobalInvocationID.x * 32;
-    uint maxIndex = min(baseIndex + 32, gl_GlobalInvocationID.y * uint(viewportSize.x) + uint(viewportSize.x));
+    uint baseIndex = gl_GlobalInvocationID.y * uint(viewportSize.x) + gl_GlobalInvocationID.x * 64;
+    uint maxIndex = min(baseIndex + 64, gl_GlobalInvocationID.y * uint(viewportSize.x) + uint(viewportSize.x));
 
     vec3 firstDir = vec3(0.0);
+
+    JobDesc right[64];
+    uint rightCount = 0;
 
     for (uint x = baseIndex; x < maxIndex; x++)
     {
         if (jobGrid[x].index != 0xFFFFFFFF)
         {
             JobDesc job = jobGrid[x];
+            vec3 rayDir = stack[job.index].rayDirection;
 
-            jobGrid[baseIndex + count] = job;
-            count++;
+            if (count == 0)
+            {
+                firstDir = rayDir;
+            }
+
+            if (dot(firstDir, rayDir) > 0.0)
+            {
+                jobGrid[baseIndex + count] = job;
+                count++;
+            }
+            else
+            {
+                right[rightCount] = job;
+                rightCount++;
+            }
+
         }
     }
 
-    for (uint i = baseIndex + count; i < maxIndex; i++) jobGrid[i].index = 0xFFFFFFFF;
+    for (uint i = 0; i < rightCount; i++) jobGrid[baseIndex + count + i] = right[i];
+    for (uint i = baseIndex + count + rightCount; i < maxIndex; i++) jobGrid[i].index = 0xFFFFFFFF;
 }

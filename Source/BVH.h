@@ -26,11 +26,11 @@ public:
 
 struct BVHNode
 {
-    alignas(16) glm::vec3 a;
-    alignas(16) glm::vec3 b;
-    int32 right;
-    glm::ivec3 index;
+    glm::vec3 a;
     int32 next;
+    glm::vec3 b;
+    int32 right;
+    glm::ivec4 index;
 };
 
 std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint32>& indices);
