@@ -30,6 +30,13 @@ add_custom_command(
 )
 
 add_custom_command(
+	OUTPUT trace_speculative.comp.h
+	PRE_BUILD
+	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/shaders/trace.comp output=${CMAKE_BINARY_DIR}/generated/trace_speculative.comp.h define=SPECULATIVE
+	MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/Source/shaders/trace.comp
+)
+
+add_custom_command(
 	OUTPUT launch.comp.h
 	PRE_BUILD
 	COMMAND ruby ${CMAKE_SOURCE_DIR}/JovianGraphics/Europa/Tools/compile_shader.rb ${CMAKE_SOURCE_DIR}/Source/shaders/launch.comp output=${CMAKE_BINARY_DIR}/generated/launch.comp.h
@@ -73,6 +80,7 @@ add_custom_command(
 
 add_custom_target(Shaders ALL DEPENDS
 	trace.comp.h
+	trace_speculative.comp.h
 	launch.comp.h
 	raysort.comp.h
 	visualize.frag.h

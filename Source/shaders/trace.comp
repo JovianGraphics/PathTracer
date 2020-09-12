@@ -3,6 +3,11 @@
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_explicit_arithmetic_types : enable
 
+#ifdef SPECULATIVE
+#extension GL_ARB_shader_group_vote : enable
+#extension GL_ARB_shader_ballot : enable
+#endif
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 #include "noise.glsl"
@@ -31,6 +36,8 @@ layout(std430, binding = 2) buffer vertexBufferAux
 {
     VertexAux vertexAux[];
 };
+
+layout(binding = 3) uniform usamplerBuffer indicies;
 
 layout(std430, binding = 4) buffer blueNoiseBuffer
 {
@@ -127,6 +134,8 @@ bool shadeHit(int jitter, int depth, vec3 hitPos, inout Intersection isect, inou
 
         // Prevent double counting the transmittance
         albedo = sqrt(albedo);
+
+        prob = 1.0hf;
     }
     else
     {
@@ -143,8 +152,7 @@ bool shadeHit(int jitter, int depth, vec3 hitPos, inout Intersection isect, inou
     return true;
 }
 
-void main() {
-    uint jobIndex = gl_GlobalInvocationID.y * uint(viewportSize.x) + gl_GlobalInvocationID.x;
+void trace(uint jobIndex) {
     uint stackIndex = jobGrid[jobIndex].index;
 
     if (stackIndex == 0xFFFFFFFF) return;
@@ -186,7 +194,7 @@ void main() {
     f16vec3 normal;
     f16vec4 albedo;
     f16vec3 wIn;
-    float16_t prob;
+    float16_t prob = 1.0hf;
 
     if (shadeHit(jitter, int(currentDepth), hitPos, isect, r, normal, albedo, wIn, prob, isDelta) && currentDepth != uint(numRays - 1))
     {
@@ -197,16 +205,39 @@ void main() {
 
         rayStack[stackIndex + 1].hitAlbedo = f16vec4(0.0);
 
-        rayStack[stackIndex + 1].prob = 1.0hf;
-
         jobGrid[jobIndex].index = stackIndex + 1;
     }
     else
     {
-        rayStack[stackIndex].prob = prob;
         jobGrid[jobIndex].index = 0xFFFFFFFF;
     }
 
+    rayStack[stackIndex].prob = prob;
     rayStack[stackIndex].hitAlbedo = albedo;
     rayStack[stackIndex].wIn = wIn;
+}
+
+shared uint jobCompleted;
+
+void main()
+{
+    uvec2 jobGridBase = gl_WorkGroupID.xy * gl_WorkGroupSize.xy * uvec2(1, 1);
+
+    jobCompleted = 0;
+
+    barrier();
+
+    // Doing this makes this faster .. does that make sense? Doesn't seem like it.
+    // Maybe caused by the ray sorting creating filled warp group while creating ones that only have very few amount of threads alive
+    while (true)
+    {
+        uint subgridJobIndex = atomicAdd(jobCompleted, 1);
+
+        if (subgridJobIndex >= 64) break;
+
+        uvec2 jobGrid = jobGridBase + uvec2(subgridJobIndex % 8, subgridJobIndex / 8);
+        uint jobIndex = jobGrid.y * uint(viewportSize.x) + jobGrid.x;
+
+        if (jobGrid.y < viewportSize.y) trace(jobIndex);
+    }
 }

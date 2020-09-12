@@ -30,8 +30,7 @@ struct BVHNode
     int32 next;
     glm::vec3 b;
     int32 right;
-    glm::ivec4 index;
 };
 
-std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint32>& indices);
+std::vector<BVHNode> BuildBVH(const std::vector<glm::vec4>& vertices, std::vector<uint32>& indices);
 void VisualizeBVH(std::vector<BVHNode>& nodes, std::vector<glm::vec4>& vertices, std::vector<VertexAux>& vertexAux, std::vector<glm::uint32>& indices);

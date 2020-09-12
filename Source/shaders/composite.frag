@@ -57,6 +57,10 @@ void main()
             L += rayStack[stackIndex + depth].wIn;
             L *= rayStack[stackIndex + depth].hitAlbedo.rgb; // hemisphere samples
         }
+        else
+        {
+            L = vec3(0.0);
+        }
     }
 
     vec4 acc = imageLoad(prevAccumulation, ivec2(gl_FragCoord.st));

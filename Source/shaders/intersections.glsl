@@ -64,20 +64,28 @@ bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
     {
         BVHNode node = bvh[index];
 
-        if (intersectBBox(r, node.a, node.b))
+        bool bboxIsectResult = intersectBBox(r, node.a, node.b);
+
+        #ifdef SPECULATIVE
+        if (anyInvocationARB(bboxIsectResult))
+        #else
+        if (bboxIsectResult)
+        #endif
         {
             if (node.right <= 0)
             {
                 // Leaf node
                 Triangle tri;
 
-                tri.i1 = node.index.x;
-                tri.i2 = node.index.y;
-                tri.i3 = node.index.z;
+                ivec3 index = ivec3(texelFetch(indicies, -node.right / 3).xyz);
 
-                tri.p1 = texelFetch(vertices, tri.i1).xyz;
-                tri.p2 = texelFetch(vertices, tri.i2).xyz;
-                tri.p3 = texelFetch(vertices, tri.i3).xyz;
+                tri.i1 = index.x;
+                tri.i2 = index.y;
+                tri.i3 = index.z;
+
+                tri.p1 = texelFetch(vertices, index.x).xyz;
+                tri.p2 = texelFetch(vertices, index.y).xyz;
+                tri.p3 = texelFetch(vertices, index.z).xyz;
 
                 hit = intersect(r, tri, isect) || hit;
 
@@ -88,8 +96,8 @@ bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
         }
         else
         {
-            if (node.next == 0) return hit;
             index = node.next;
+            if (index == 0) return hit;
         }
     }
 

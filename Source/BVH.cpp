@@ -54,6 +54,7 @@ glm::vec3 BBox::GetSize()
 
 struct BuildBVHTask
 {
+    BBox bbox;
     uint32 start;
     uint32 end;
     uint32 depth;
@@ -61,12 +62,32 @@ struct BuildBVHTask
     int32 writeTo;
 };
 
-std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint32>& indices)
+inline BBox ComputeBBox(const std::vector<glm::vec4>& vertices, const std::vector<uint32>& indices, uint32 start, uint32 end)
+{
+    BBox bbox = BBox();
+
+    for (uint32 i = start; i < end; i += 3)
+    {
+        glm::vec3 p0 = vertices[indices[i]];
+        glm::vec3 p1 = vertices[indices[i + 1]];
+        glm::vec3 p2 = vertices[indices[i + 2]];
+
+        bbox.Extend(p0);
+        bbox.Extend(p1);
+        bbox.Extend(p2);
+    }
+
+    return bbox;
+}
+
+std::vector<BVHNode> BuildBVH(const std::vector<glm::vec4>& vertices, std::vector<uint32>& indices)
 {
     std::vector<BVHNode> nodes;
     std::vector<BuildBVHTask> tasks;
+    nodes.reserve(indices.size() / 3 * 2);
+    tasks.reserve(size_t(log2(indices.size())));
 
-    tasks.push_back({ 0, uint32(indices.size()), 0, false, 0 });
+    tasks.push_back({ ComputeBBox(vertices, indices, 0, indices.size()), 0, uint32(indices.size()), 0, false, 0 });
 
     uint32 maxDepth = 0;
 
@@ -80,7 +101,6 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
         if (task.isRight)
         {
             nodes[task.writeTo].right = index;
-            //nodes[task.writeTo].next = index;
         }
 
         nodes.push_back(BVHNode{});
@@ -91,18 +111,7 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
         uint32 start = task.start;
         uint32 end = task.end;
 
-        BBox bbox = BBox(vertices[indices[start]]);
-
-        for (uint32 i = start; i < end; i += 3)
-        {
-            glm::vec3 p0 = vertices[indices[i]];
-            glm::vec3 p1 = vertices[indices[i + 1]];
-            glm::vec3 p2 = vertices[indices[i + 2]];
-
-            bbox.Extend(p0);
-            bbox.Extend(p1);
-            bbox.Extend(p2);
-        }
+        BBox bbox = ComputeBBox(vertices, indices, start, end);
 
         node.a = bbox.a - glm::vec3(0.00006f);
         node.b = bbox.b + glm::vec3(0.00006f);
@@ -111,9 +120,7 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
         {
             if (end - start != 3) throw std::runtime_error("Non-triangle found in primitives");
 
-            node.right = -int32(end);
-
-            node.index = glm::ivec4(indices[start], indices[start + 1], indices[start + 2], 1);
+            node.right = -int32(start);
 
             continue;
         }
@@ -125,6 +132,10 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
         float maxScore = -(1.0f + 2.0f * (end - start) / 3);
         float selectedRatio = 0.5;
         bool leftFirst = true;
+        BBox bboxLeft, bboxRight;
+
+        float radius = glm::distance(bbox.a, bbox.b);
+        glm::vec3 bboxCentroid = (bbox.a + bbox.b) * 0.5f;
 
         const glm::vec3 availableAxes[] = {
             glm::vec3(1.0, 0.0, 0.0),
@@ -142,8 +153,6 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
         {
             glm::vec3 axis = availableAxes[x];
 
-            float length = glm::dot(bbox.b, axis) - glm::dot(bbox.a, axis);
-
             // Binned SAH
             BBox bboxBins[8];
             uint32 numPrimBins[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -158,15 +167,8 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
 
                 for (uint32 j = 0; j < 8; j++)
                 {
-                    float splitPos0 = glm::dot(bbox.a, axis) + length * splitRatio[j];
-                    float splitPos1 = glm::dot(bbox.a, axis) + length * splitRatio[j + 1];
-
-                    if (splitPos0 > splitPos1)
-                    {
-                        float t = splitPos0;
-                        splitPos0 = splitPos1;
-                        splitPos1 = t;
-                    }
+                    float splitPos0 = glm::dot(bboxCentroid, axis) + radius * (splitRatio[j] - 0.5);
+                    float splitPos1 = glm::dot(bboxCentroid, axis) + radius * (splitRatio[j + 1] - 0.5);
 
                     float l = dot(centroid, axis);
 
@@ -201,16 +203,6 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
 
                 float pA = dot(leftSize, leftSize) / totalArea;
                 float pB = dot(rightSize, rightSize) / totalArea;
-                float iou = dot(intersection.b - intersection.a, intersection.b - intersection.a) / totalArea;
-
-                /*
-                if (pA == 1.0 && pB == 1.0)
-                {
-                    GanymedePrint pA, pB;
-
-                    GanymedePrint "Left", leftCount, "Right", rightCount, "total", (end - start) / 3;
-                }
-                */
 
                 float score = -(
                     1.0f + 
@@ -224,11 +216,14 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
                     selectedRatio = splitRatio[i];
                     selectedAxis = axis;
                     leftFirst = pA < pB;
+
+                    bboxLeft = left;
+                    bboxRight = right;
                 }
             }
         }
 
-        float splitPos = glm::dot(bbox.a, selectedAxis) + glm::dot(bboxSize, selectedAxis) * selectedRatio;
+        float splitPos = glm::dot(bboxCentroid, selectedAxis) + radius * (selectedRatio - 0.5);
 
         std::vector<uint32> leftPrims;
         std::vector<uint32> rightPrims;
@@ -271,24 +266,17 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
 
         if (leftPrims.size() == 0 || rightPrims.size() == 0)
         {
-            tasks.push_back({ center, end, task.depth + 1, true, index });
-            tasks.push_back({ start, center, task.depth + 1, false, index });
+            tasks.push_back({ ComputeBBox(vertices, indices, center, end), center, end, task.depth + 1, true, index });
+            tasks.push_back({ ComputeBBox(vertices, indices, start, center), start, center, task.depth + 1, false, index });
         }
         else
         {
-            if (leftFirst)
-            {
-                tasks.push_back({ start + uint32(leftPrims.size()), end, task.depth + 1, true, index });
-                tasks.push_back({ start, start + uint32(leftPrims.size()), task.depth + 1, false, index });
-            }
-            else
-            {
-                tasks.push_back({ start, start + uint32(leftPrims.size()), task.depth + 1, true, index });
-                tasks.push_back({ start + uint32(leftPrims.size()), end, task.depth + 1, false, index });
-            }
+            tasks.push_back({ bboxRight, start + uint32(leftPrims.size()), end, task.depth + 1, true, index });
+            tasks.push_back({ bboxLeft, start, start + uint32(leftPrims.size()), task.depth + 1, false, index });
         }
     }
 
+    // Fill in the skip connections (next*)
     struct ConstructNext
     {
         int32 index;
@@ -311,7 +299,7 @@ std::vector<BVHNode> BuildBVH(std::vector<glm::vec4> vertices, std::vector<uint3
         }
     }
 
-    GanymedePrint "Built BVH with", nodes.size(), "nodes,", indices.size() / 3 ,"triangles , maxDepth =", maxDepth;
+    GanymedePrint "Built BVH with", nodes.size(), "nodes (", sizeof(BVHNode) * nodes.size() ,"Bytes),", indices.size() / 3, "triangles, maxDepth =", maxDepth;
 
     return nodes;
 }

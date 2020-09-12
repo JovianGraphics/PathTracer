@@ -7,6 +7,7 @@
 #include "Himalia/Source/Himalia.h"
 
 #include "trace.comp.h"
+#include "trace_speculative.comp.h"
 #include "launch.comp.h"
 #include "raysort.comp.h"
 #include "visualize.frag.h"
@@ -29,7 +30,7 @@ std::vector<glm::vec4> vertexPosition;
 std::vector<VertexAux> vertexAuxilary;
 std::vector<uint32> indices;
 std::vector<Light> lights = {
-	{ glm::vec3(0.0, 0.7, 0.0), glm::vec3(1.0, 1.0, 1.0) },
+	{ glm::vec3(0.0, 1.4, 0.0), glm::vec3(1.0, 1.0, 1.0) },
 };
 std::vector<BVHNode> nodes;
 
@@ -45,6 +46,7 @@ public:
 	EuropaBufferView::Ref m_vertexPosBufferView;
 	EuropaBuffer::Ref m_vertexBuffer;
 	EuropaBuffer::Ref m_indexBuffer;
+	EuropaBufferView::Ref m_indexBufferView;
 	EuropaBuffer::Ref m_lightsBuffer;
 	EuropaBuffer::Ref m_blueNoiseBuffer;
 	EuropaBuffer::Ref m_bvhBuffer;
@@ -58,6 +60,7 @@ public:
 
 	EuropaDescriptorPool::Ref m_descPool;
 	EuropaPipeline::Ref m_pipeline;
+	EuropaPipeline::Ref m_pipelineSpeculative;
 	EuropaPipeline::Ref m_pipelineRayLaunch;
 	EuropaPipeline::Ref m_pipelineRaySort;
 	EuropaPipeline::Ref m_pipelineComposite;
@@ -92,12 +95,15 @@ public:
 		// Load Model
 		HimaliaPlyModel plyModel;
 
-		//plyModel.LoadFile("Assets/CBbunny.ply");
-		//plyModel.LoadFile("Assets/CBdragon.ply");
-		//plyModel.LoadFile("Assets/CBmonkey.ply");
-		//plyModel.LoadFile("Assets/minecraft.ply");
-		//plyModel.LoadFile("Assets/cornellBox.ply");
-		plyModel.LoadFile("Assets/sponza.ply");
+		//plyModel.LoadFile("../Models/CBbunny.ply");
+		//plyModel.LoadFile("../Models/CBdragon.ply");
+		//plyModel.LoadFile("../Models/CBmonkey.ply");
+		//plyModel.LoadFile("../Models/minecraft.ply");
+		//plyModel.LoadFile("../Models/cornellBox.ply");
+		//plyModel.LoadFile("../Models/sponza.ply");
+		//plyModel.LoadFile("../Models/conference.ply");
+		//plyModel.LoadFile("../Models/livingRoom.ply");
+		plyModel.LoadFile("../Models/SanMiguel.ply");
 
 		HimaliaVertexProperty vertexFormatAux[] = {
 			HimaliaVertexProperty::Normal,
@@ -140,13 +146,15 @@ public:
 		amalthea->m_transferUtil->UploadToBufferEx(m_vertexPosBuffer, vertexPosition.data(), uint32(vertexPosition.size()));
 
 		m_vertexPosBufferView = amalthea->m_device->CreateBufferView(m_vertexPosBuffer, vertexBufferPosInfo.size, 0, EuropaImageFormat::RGBA32F);
-		
+
 		EuropaBufferInfo indexBufferInfo;
 		indexBufferInfo.exclusive = true;
 		indexBufferInfo.size = uint32(indices.size() * sizeof(uint32));
-		indexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageIndex | EuropaBufferUsageTransferDst);
+		indexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageUniformTexel | EuropaBufferUsageIndex | EuropaBufferUsageTransferDst);
 		indexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_indexBuffer = amalthea->m_device->CreateBuffer(indexBufferInfo);
+
+		m_indexBufferView = amalthea->m_device->CreateBufferView(m_indexBuffer, uint32(bvhVisStartIndex * sizeof(uint32)), 0, EuropaImageFormat::RGB32UI);
 
 		amalthea->m_transferUtil->UploadToBufferEx(m_indexBuffer, indices.data(), uint32(indices.size()));
 
@@ -290,7 +298,7 @@ public:
 		descLayout->DynamicUniformBuffer(0, 1, EuropaShaderStageAll);
 		descLayout->Storage(1, 1, EuropaShaderStageCompute);
 		descLayout->Storage(2, 1, EuropaShaderStageCompute);
-		descLayout->Storage(3, 1, EuropaShaderStageCompute);
+		descLayout->BufferViewUniform(3, 1, EuropaShaderStageCompute);
 		descLayout->Storage(4, 1, EuropaShaderStageCompute);
 		descLayout->ImageViewStorage(5, 1, EuropaShaderStageAll);
 		descLayout->ImageViewStorage(6, 1, EuropaShaderStageAll);
@@ -303,7 +311,7 @@ public:
 		m_pipelineLayout = amalthea->m_device->CreatePipelineLayout(EuropaPipelineLayoutInfo{ 1, 0, &descLayout });
 
 		{
-			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_trace_comp, sizeof(shader_spv_trace_comp));
+			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_trace_comp_h, sizeof(shader_spv_trace_comp_h));
 
 			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
 
@@ -311,7 +319,15 @@ public:
 		}
 
 		{
-			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_launch_comp, sizeof(shader_spv_launch_comp));
+			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_trace_speculative_comp_h, sizeof(shader_spv_trace_speculative_comp_h));
+
+			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
+
+			m_pipelineSpeculative = amalthea->m_device->CreateComputePipeline(stage, m_pipelineLayout);
+		}
+
+		{
+			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_launch_comp_h, sizeof(shader_spv_launch_comp_h));
 
 			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
 
@@ -319,7 +335,7 @@ public:
 		}
 
 		{
-			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_raysort_comp, sizeof(shader_spv_raysort_comp));
+			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_raysort_comp_h, sizeof(shader_spv_raysort_comp_h));
 
 			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
 
@@ -327,8 +343,8 @@ public:
 		}
 
 		{
-			EuropaShaderModule::Ref shaderFragment = amalthea->m_device->CreateShaderModule(shader_spv_composite_frag, sizeof(shader_spv_composite_frag));
-			EuropaShaderModule::Ref shaderVertex = amalthea->m_device->CreateShaderModule(shader_spv_composite_vert, sizeof(shader_spv_composite_vert));
+			EuropaShaderModule::Ref shaderFragment = amalthea->m_device->CreateShaderModule(shader_spv_composite_frag_h, sizeof(shader_spv_composite_frag_h));
+			EuropaShaderModule::Ref shaderVertex = amalthea->m_device->CreateShaderModule(shader_spv_composite_vert_h, sizeof(shader_spv_composite_vert_h));
 
 			EuropaShaderStageInfo stages[2] = {
 				EuropaShaderStageInfo{ EuropaShaderStageFragment, shaderFragment, "main" },
@@ -360,8 +376,8 @@ public:
 		}
 
 		{
-			EuropaShaderModule::Ref shaderFragment = amalthea->m_device->CreateShaderModule(shader_spv_visualize_frag, sizeof(shader_spv_visualize_frag));
-			EuropaShaderModule::Ref shaderVertex = amalthea->m_device->CreateShaderModule(shader_spv_visualize_vert, sizeof(shader_spv_visualize_vert));
+			EuropaShaderModule::Ref shaderFragment = amalthea->m_device->CreateShaderModule(shader_spv_visualize_frag_h, sizeof(shader_spv_visualize_frag_h));
+			EuropaShaderModule::Ref shaderVertex = amalthea->m_device->CreateShaderModule(shader_spv_visualize_vert_h, sizeof(shader_spv_visualize_vert_h));
 
 			EuropaShaderStageInfo stages[2] = {
 				EuropaShaderStageInfo{ EuropaShaderStageFragment, shaderFragment, "main" },
@@ -440,10 +456,9 @@ public:
 		// Constants & Descriptor Pools / Sets
 		EuropaDescriptorPoolSizes descPoolSizes;
 		descPoolSizes.UniformDynamic = uint32(1 * amalthea->m_frames.size());
-		descPoolSizes.UniformTexel = uint32(1 * amalthea->m_frames.size());
-		descPoolSizes.StorageTexel = uint32(1 * amalthea->m_frames.size());
+		descPoolSizes.UniformTexel = uint32(2 * amalthea->m_frames.size());
 		descPoolSizes.StorageImage = uint32(2 * amalthea->m_frames.size());
-		descPoolSizes.Storage = uint32(8 * amalthea->m_frames.size());
+		descPoolSizes.Storage = uint32(7 * amalthea->m_frames.size());
 
 		m_descPool = amalthea->m_device->CreateDescriptorPool(descPoolSizes, uint32(amalthea->m_frames.size()));
 
@@ -529,6 +544,7 @@ public:
 		{
 			m_descSets[ctx.frameIndex]->SetStorage(m_lightsBuffer, 0, uint32(lights.size() * sizeof(Light)), 1, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_vertexBuffer, 0, uint32(bvhVisStartVertex * sizeof(VertexAux)), 2, 0);
+			m_descSets[ctx.frameIndex]->SetBufferViewUniform(m_indexBufferView, 3, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_blueNoiseBuffer, 0, sizeof(_blueNoise), 4, 0);
 			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[(ctx.frameIndex - 1) % amalthea->m_frames.size()], EuropaImageLayout::General, 5, 0);
 			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[ctx.frameIndex], EuropaImageLayout::General, 6, 0);
@@ -546,7 +562,7 @@ public:
 		{
 			ctx.cmdlist->BindDescriptorSetsDynamicOffsets(EuropaPipelineBindPoint::Compute, m_pipelineLayout, m_descSets[ctx.frameIndex], 0, constantsHandle.offset);
 			ctx.cmdlist->BindCompute(m_pipelineRayLaunch);
-			ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 16.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 16.0f)), 1);
+			ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 32.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 32.0f)), 1);
 			
 			for (uint32 d = 0; d < m_maxDepth; d++)
 			{
@@ -555,7 +571,12 @@ public:
 					EuropaAccessShaderWrite, EuropaAccessShaderRead,
 					EuropaPipelineStageComputeShader, EuropaPipelineStageComputeShader
 				);
-				ctx.cmdlist->BindCompute(m_pipeline);
+				
+				if (d == 0)
+					ctx.cmdlist->BindCompute(m_pipelineSpeculative);
+				else
+					ctx.cmdlist->BindCompute(m_pipeline);
+
 				ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 8.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 8.0f)), 1);
 
 				if (m_raySort && d != m_maxDepth - 1)
@@ -566,7 +587,7 @@ public:
 						EuropaPipelineStageComputeShader, EuropaPipelineStageComputeShader
 					); 
 					ctx.cmdlist->BindCompute(m_pipelineRaySort);
-					ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 64.0f)), uint32(ceil(float(amalthea->m_windowSize.y) / 32.0f)), 1);
+					ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 256.0f)), uint32(amalthea->m_windowSize.y), 1);
 					ctx.cmdlist->Barrier(
 						m_jobBuffer, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob)), 0,
 						EuropaAccessShaderWrite, EuropaAccessShaderRead,

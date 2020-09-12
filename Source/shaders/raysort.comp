@@ -3,7 +3,7 @@
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_shader_explicit_arithmetic_types : enable
 
-layout(local_size_x = 1, local_size_y = 32, local_size_z = 1) in;
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 #include "structures.glsl"
 
@@ -31,44 +31,31 @@ layout(std430, binding = 10) buffer jobBuffer
     JobDesc jobGrid[];
 };
 
+shared uint count;
+
 void main()
 {
-    uint count = 0;
+    count = 0;
 
-    uint baseIndex = gl_GlobalInvocationID.y * uint(viewportSize.x) + gl_GlobalInvocationID.x * 64;
-    uint maxIndex = min(baseIndex + 64, gl_GlobalInvocationID.y * uint(viewportSize.x) + uint(viewportSize.x));
+    uint gridIndex = gl_GlobalInvocationID.y * uint(viewportSize.x) + gl_GlobalInvocationID.x;
+    uint localIndex = gl_LocalInvocationIndex;
 
-    vec3 firstDir = vec3(0.0);
+    uint baseIndex = gl_WorkGroupID.y * uint(viewportSize.x) + gl_WorkGroupID.x * gl_WorkGroupSize.x;
 
-    JobDesc right[64];
-    uint rightCount = 0;
+    uint newIndex = 0xFFFFFFFF;
 
-    for (uint x = baseIndex; x < maxIndex; x++)
+    JobDesc job = jobGrid[gridIndex];
+    
+    if (job.index != 0xFFFFFFFF)
     {
-        if (jobGrid[x].index != 0xFFFFFFFF)
-        {
-            JobDesc job = jobGrid[x];
-            vec3 rayDir = stack[job.index].rayDirection;
-
-            if (count == 0)
-            {
-                firstDir = rayDir;
-            }
-
-            if (dot(firstDir, rayDir) > 0.0)
-            {
-                jobGrid[baseIndex + count] = job;
-                count++;
-            }
-            else
-            {
-                right[rightCount] = job;
-                rightCount++;
-            }
-
-        }
+        newIndex = atomicAdd(count, 1);
     }
 
-    for (uint i = 0; i < rightCount; i++) jobGrid[baseIndex + count + i] = right[i];
-    for (uint i = baseIndex + count + rightCount; i < maxIndex; i++) jobGrid[i].index = 0xFFFFFFFF;
+    groupMemoryBarrier();
+
+    jobGrid[gridIndex].index = 0xFFFFFFFF;
+
+    groupMemoryBarrier();
+
+    if (newIndex != 0xFFFFFFFF) jobGrid[baseIndex + newIndex] = job;
 }

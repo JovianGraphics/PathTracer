@@ -37,7 +37,6 @@ struct BVHNode
     int next;
     vec3 b;
     int right;
-    ivec3 index;
 };
 
 struct RayStackBuffer
