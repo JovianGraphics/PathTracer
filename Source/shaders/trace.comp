@@ -13,20 +13,6 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 #include "noise.glsl"
 #include "structures.glsl"
 
-layout(binding = 0) uniform Constants {
-    mat4 viewMtx;
-    mat4 projMtx;
-    mat4 viewInvMtx;
-    mat4 projInvMtx;
-    vec2 viewportSize;
-    vec2 viewportBase;
-    uint numLights;
-    uint numTriangles;
-    uint frameIndex;
-    uint numRays;
-    uint numBVHNodes;
-};
-
 layout(std430, binding = 1) buffer lightBuffer
 {
     Light lights[];
@@ -120,9 +106,9 @@ bool shadeHit(int jitter, int depth, vec3 hitPos, inout Intersection isect, inou
     }
 
     // Secondary Contribution
-    f16vec2 gridSample = WeylNth(int(jitter * numRays + depth));
+    f16vec2 gridSample = f16vec2(getRandF(), getRandF());
     vec3 nextDir = vec3(to_coord_space(normal, cosineHemisphere(gridSample)));
-
+    
     if (albedo.a < 0.5)
     {
         float16_t ior = 1.3hf;
@@ -134,13 +120,13 @@ bool shadeHit(int jitter, int depth, vec3 hitPos, inout Intersection isect, inou
 
         // Prevent double counting the transmittance
         albedo = sqrt(albedo);
-
+        
         prob = 1.0hf;
     }
     else
     {
         prob = 1.0hf / 0.7hf;
-        if (gridSample.x > 0.7) return false;
+        if (getRandF() > 0.7) return false;
     }
 
     r.o = hitPos;
@@ -163,7 +149,9 @@ void trace(uint jobIndex) {
     uvec2 launchIndex = uvec2(stackGridIndex % uint(viewportSize.x), stackGridIndex / uint(viewportSize.y));
     
     // if (launchIndex.x >= viewportSize.x || launchIndex.y >= viewportSize.y) return;
-    int jitter = (blueNoise[(launchIndex.x & 0xFF) + ((launchIndex.y & 0xFF) << 8)] * 256 + blueNoise[frameIndex]) & 0xFFFF;
+    int jitter = (blueNoise[(launchIndex.x & 0xFF) + ((launchIndex.y & 0xFF) << 8)] * 256 + blueNoise[frameIndex] + int(frameIndex));
+    jitter = jitter * int(numRays) + int(currentDepth);
+    rnd = rayStack[stackIndex].randState;
 
     vec3 accumulation = vec3(0.0);
 
@@ -173,12 +161,13 @@ void trace(uint jobIndex) {
     r.o = rayStack[stackIndex].rayOrigin;
     r.d = rayStack[stackIndex].rayDirection;
     r.rcpD = f16vec3(1.0 / r.d);
-    r.min_t = 0.00001;
+    r.min_t = 0.01;
     r.max_t = 100000.0;
 
     if (!traceRay(r, isect, false))
     {
         rayStack[stackIndex].prob = 0.0hf;
+        if (currentDepth > 0) rayStack[stackIndex - 1].wIn += f16vec3(ambientRadiance);
         return;
     }
 
@@ -201,6 +190,7 @@ void trace(uint jobIndex) {
         // Prepare next ray
         rayStack[stackIndex + 1].rayOrigin = r.o;
         rayStack[stackIndex + 1].rayDirection = r.d;
+        rayStack[stackIndex + 1].randState = rnd;
         rayStack[stackIndex + 1].currentDepth = currentDepth + 1;
 
         rayStack[stackIndex + 1].hitAlbedo = f16vec4(0.0);
@@ -212,6 +202,7 @@ void trace(uint jobIndex) {
         jobGrid[jobIndex].index = 0xFFFFFFFF;
     }
 
+    rayStack[stackIndex].randState = rnd;
     rayStack[stackIndex].prob = prob;
     rayStack[stackIndex].hitAlbedo = albedo;
     rayStack[stackIndex].wIn = wIn;

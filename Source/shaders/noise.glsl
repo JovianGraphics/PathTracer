@@ -35,6 +35,34 @@ float bayer_64x64(in vec2 pos, in vec2 view)
 	return bayer64(pos * view);
 }
 
+float hash11(float p)
+{
+    p = fract(p * .1031);
+    p *= p + 33.33;
+    p *= p + p;
+    return fract(p);
+}
+
+float hash12(vec2 p)
+{
+	vec3 p3  = fract(vec3(p.xyx) * .1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+uint rnd = 0;
+
+uint getRand()
+{
+    rnd = rnd * 16807 % 2147483647;
+    return rnd;
+}
+
+float getRandF()
+{
+    return float(float(getRand()) / 2147483647.0f);
+}
+
 f16vec2 WeylNth(int n)
 {
 	return f16vec2(fract(vec2(n * 12664745, n * 9560333) / exp2(24.0)));

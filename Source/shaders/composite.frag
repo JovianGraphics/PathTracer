@@ -7,23 +7,7 @@ layout(location = 0) out vec3 outColor;
 
 #include "structures.glsl"
 
-layout(binding = 0) uniform Constants {
-    mat4 viewMtx;
-    mat4 projMtx;
-    mat4 viewInvMtx;
-    mat4 projInvMtx;
-    vec2 viewportSize;
-    vec2 viewportBase;
-    uint numLights;
-    uint numTriangles;
-    uint frameIndex;
-    uint numRays;
-	uint currentDepth;
-    uint numBVHNodes;
-};
-
-layout(binding = 5, rgba32f) uniform image2D prevAccumulation;
-layout(binding = 6, rgba32f) uniform image2D currAccumulation;
+layout(binding = 6, rgba32f) uniform image2D accumulation;
 
 layout(std430, binding = 9) buffer stackBuffer
 {
@@ -63,9 +47,9 @@ void main()
         }
     }
 
-    vec4 acc = imageLoad(prevAccumulation, ivec2(gl_FragCoord.st));
+    vec4 acc = imageLoad(accumulation, ivec2(gl_FragCoord.st));
     acc += vec4(L, 1.0);
-    imageStore(currAccumulation, ivec2(gl_FragCoord.st), acc);
+    imageStore(accumulation, ivec2(gl_FragCoord.st), acc);
 
     outColor = pow(ACESFilm(acc.rgb / acc.w), vec3(1.0 / 2.2));
 }

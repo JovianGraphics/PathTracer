@@ -42,6 +42,7 @@ struct BVHNode
 struct RayStackBuffer
 {
 	vec3 rayDirection;
+    uint randState;
     vec3 rayOrigin;
     uint currentDepth;
 	f16vec4 hitAlbedo;
@@ -52,4 +53,19 @@ struct RayStackBuffer
 struct JobDesc
 {
     uint32_t index;
+};
+
+layout(binding = 0) uniform Constants {
+    mat4 viewMtx;
+    mat4 projMtx;
+    mat4 viewInvMtx;
+    mat4 projInvMtx;
+    vec2 viewportSize;
+    vec2 viewportBase;
+    uint numLights;
+    uint numTriangles;
+    uint frameIndex;
+    uint numRays;
+    uint numBVHNodes;
+    vec3 ambientRadiance;
 };

@@ -24,6 +24,7 @@ struct ShaderConstants {
 	uint32 frameIndex;
 	uint32 numRays;
 	uint32 numBVHNodes;
+	alignas(16) glm::vec3 ambientRadiance;
 };
 
 struct Light

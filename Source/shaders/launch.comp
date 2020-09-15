@@ -8,20 +8,6 @@ layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 #include "noise.glsl"
 #include "structures.glsl"
 
-layout(binding = 0) uniform Constants {
-    mat4 viewMtx;
-    mat4 projMtx;
-    mat4 viewInvMtx;
-    mat4 projInvMtx;
-    vec2 viewportSize;
-    vec2 viewportBase;
-    uint numLights;
-    uint numTriangles;
-    uint frameIndex;
-    uint numRays;
-    uint numBVHNodes;
-};
-
 layout(std430, binding = 4) buffer blueNoiseBuffer
 {
     uint16_t blueNoise[];
@@ -37,12 +23,14 @@ layout(std430, binding = 10) buffer jobBuffer
     JobDesc jobGrid[];
 };
 
+layout(binding = 6, rgba32f) uniform image2D accumulation;
+
 void main()
 {
     uvec2 launchIndex = gl_GlobalInvocationID.xy + uvec2(viewportBase);
     if (launchIndex.x >= viewportSize.x || launchIndex.y >= viewportSize.y) return;
-    int jitter = (blueNoise[(launchIndex.x & 0xFF) + ((launchIndex.y & 0xFF) << 8)] * 256 + blueNoise[frameIndex]) & 0xFFFF;
-
+    int jitter = (blueNoise[(launchIndex.x & 0xFF) + ((launchIndex.y & 0xFF) << 8)] * 256 + blueNoise[frameIndex]);
+    
     vec4 projPos = vec4(((vec2(launchIndex) + WeylNth(jitter)) / viewportSize) * 2.0 - 1.0, 1.0, 1.0);
     vec4 viewPos = projInvMtx * projPos; viewPos /= viewPos.w;
     vec3 worldPos = (viewInvMtx * viewPos).xyz;
@@ -57,4 +45,7 @@ void main()
     stack[stackIndex].rayDirection = normalize(worldPos - camPos.xyz);
     stack[stackIndex].currentDepth = 0;
     jobGrid[jobIndex].index = stackIndex;
+
+    if (imageLoad(accumulation, ivec2(launchIndex)).a < 0.5)
+        stack[stackIndex].randState = uint(jitter);
 }

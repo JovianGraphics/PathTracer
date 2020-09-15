@@ -9,7 +9,9 @@
 #include "trace.comp.h"
 #include "trace_speculative.comp.h"
 #include "launch.comp.h"
-#include "raysort.comp.h"
+#include "raysortX.comp.h"
+#include "raysortY.comp.h"
+#include "raysortZ.comp.h"
 #include "visualize.frag.h"
 #include "visualize.vert.h"
 #include "composite.frag.h"
@@ -71,8 +73,8 @@ public:
 	std::vector<EuropaDescriptorSet::Ref> m_descSets;
 	std::vector<EuropaFramebuffer::Ref> m_frameBuffers;
 
-	std::vector<EuropaImage::Ref> m_accumulationImages;
-	std::vector<EuropaImageView::Ref> m_accumulationImageViews;
+	EuropaImage::Ref m_accumulationImages;
+	EuropaImageView::Ref m_accumulationImageViews;
 
 	uint32 m_frameIndex = 0;
 	uint32 m_maxDepth = 5;
@@ -85,10 +87,24 @@ public:
 	float m_orbitRadius = 3.0;
 	float m_orbitAngle = 0.0;
 
+	glm::vec3 m_ambientRadiance = glm::vec3(0.4, 0.5, 0.7);
+
 	GanymedeScrollingBuffer m_frameTimeLog = GanymedeScrollingBuffer(1000, 0);
 	GanymedeScrollingBuffer m_frameRateLog = GanymedeScrollingBuffer(1000, 0);
 	uint32 m_frameCount = 0;
 	float m_fps = 0.0;
+
+	void UpdateLights()
+	{
+		EuropaBufferInfo lightBufferInfo;
+		lightBufferInfo.exclusive = true;
+		lightBufferInfo.size = uint32(lights.size() * sizeof(Light));
+		lightBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
+		lightBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+		m_lightsBuffer = m_amalthea.m_device->CreateBuffer(lightBufferInfo);
+
+		m_amalthea.m_transferUtil->UploadToBufferEx(m_lightsBuffer, lights.data(), uint32(lights.size()));
+	}
 
 	AmaltheaBehaviors::OnCreateDevice f_onCreateDevice = [&](Amalthea* amalthea)
 	{
@@ -100,10 +116,10 @@ public:
 		//plyModel.LoadFile("../Models/CBmonkey.ply");
 		//plyModel.LoadFile("../Models/minecraft.ply");
 		//plyModel.LoadFile("../Models/cornellBox.ply");
-		//plyModel.LoadFile("../Models/sponza.ply");
+		plyModel.LoadFile("../Models/sponza.ply");
 		//plyModel.LoadFile("../Models/conference.ply");
 		//plyModel.LoadFile("../Models/livingRoom.ply");
-		plyModel.LoadFile("../Models/SanMiguel.ply");
+		//plyModel.LoadFile("../Models/SanMiguel.ply");
 
 		HimaliaVertexProperty vertexFormatAux[] = {
 			HimaliaVertexProperty::Normal,
@@ -158,14 +174,7 @@ public:
 
 		amalthea->m_transferUtil->UploadToBufferEx(m_indexBuffer, indices.data(), uint32(indices.size()));
 
-		EuropaBufferInfo lightBufferInfo;
-		lightBufferInfo.exclusive = true;
-		lightBufferInfo.size = uint32(lights.size() * sizeof(Light));
-		lightBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
-		lightBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
-		m_lightsBuffer = amalthea->m_device->CreateBuffer(lightBufferInfo);
-
-		amalthea->m_transferUtil->UploadToBufferEx(m_lightsBuffer, lights.data(), uint32(lights.size()));
+		UpdateLights();
 
 		EuropaBufferInfo blueNoiseBufferInfo;
 		blueNoiseBufferInfo.exclusive = true;
@@ -221,43 +230,40 @@ public:
 		m_depthView = amalthea->m_device->CreateImageView(depthViewInfo);
 
 		// Create Accumulation buffer
-		m_accumulationImages.clear();
-		m_accumulationImageViews.clear();
+		m_accumulationImages = nullptr;
+		m_accumulationImageViews = nullptr;
 
-		for (int i = 0; i < amalthea->m_frames.size(); i++)
-		{
-			EuropaImageInfo info;
-			info.width = amalthea->m_windowSize.x;
-			info.height = amalthea->m_windowSize.y;
-			info.initialLayout = EuropaImageLayout::General;
-			info.type = EuropaImageType::Image2D;
-			info.format = EuropaImageFormat::RGBA32F;
-			info.usage = EuropaImageUsage(EuropaImageUsageStorage | EuropaImageUsageTransferSrc | EuropaImageUsageTransferDst);
-			info.memoryUsage = EuropaMemoryUsage::GpuOnly;
+		EuropaImageInfo info;
+		info.width = m_amalthea.m_windowSize.x;
+		info.height = m_amalthea.m_windowSize.y;
+		info.initialLayout = EuropaImageLayout::General;
+		info.type = EuropaImageType::Image2D;
+		info.format = EuropaImageFormat::RGBA32F;
+		info.usage = EuropaImageUsage(EuropaImageUsageStorage | EuropaImageUsageTransferSrc | EuropaImageUsageTransferDst);
+		info.memoryUsage = EuropaMemoryUsage::GpuOnly;
 
-			auto image = amalthea->m_device->CreateImage(info);
-			m_accumulationImages.push_back(image);
+		m_accumulationImages = m_amalthea.m_device->CreateImage(info);
 
-			EuropaImageViewCreateInfo viewInfo;
-			viewInfo.format = EuropaImageFormat::RGBA32F;
-			viewInfo.image = image;
-			viewInfo.type = EuropaImageViewType::View2D;
-			viewInfo.minArrayLayer = 0;
-			viewInfo.minMipLevel = 0;
-			viewInfo.numArrayLayers = 1;
-			viewInfo.numMipLevels = 1;
-		
-			m_accumulationImageViews.push_back(amalthea->m_device->CreateImageView(viewInfo));
-		}
+		EuropaImageViewCreateInfo viewInfo;
+		viewInfo.format = EuropaImageFormat::RGBA32F;
+		viewInfo.image = m_accumulationImages;
+		viewInfo.type = EuropaImageViewType::View2D;
+		viewInfo.minArrayLayer = 0;
+		viewInfo.minMipLevel = 0;
+		viewInfo.numArrayLayers = 1;
+		viewInfo.numMipLevels = 1;
+
+		m_accumulationImageViews = m_amalthea.m_device->CreateImageView(viewInfo);
 
 		// Create Ray Stack
 		EuropaBufferInfo rayStackInfo;
 		rayStackInfo.exclusive = true;
-		rayStackInfo.size = uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * m_maxDepth * sizeof(RayStack));
+		rayStackInfo.size = uint32(m_amalthea.m_windowSize.x * m_amalthea.m_windowSize.y * 5 * sizeof(RayStack));
 		rayStackInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage);
 		rayStackInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
-		m_rayStackBuffer = amalthea->m_device->CreateBuffer(rayStackInfo);
+		m_rayStackBuffer = m_amalthea.m_device->CreateBuffer(rayStackInfo);
 
+		// Create Job Buffer
 		EuropaBufferInfo jobBufferInfo;
 		jobBufferInfo.exclusive = true;
 		jobBufferInfo.size = uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob));
@@ -335,7 +341,7 @@ public:
 		}
 
 		{
-			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_raysort_comp_h, sizeof(shader_spv_raysort_comp_h));
+			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_raysortX_comp_h, sizeof(shader_spv_raysortX_comp_h));
 
 			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
 
@@ -521,7 +527,7 @@ public:
 		auto constantsHandle = amalthea->m_streamingBuffer->AllocateTransient(m_constantsSize);
 		ShaderConstants* constants = constantsHandle.Map<ShaderConstants>();
 
-		constants->viewMtx = glm::lookAt(glm::vec3(cos(m_orbitAngle) * m_orbitRadius, m_orbitHeight, sin(m_orbitAngle) * m_orbitRadius), m_focusCenter, glm::vec3(0.0, 1.0, 0.0));
+		constants->viewMtx = glm::lookAt(glm::vec3(cos(m_orbitAngle) * m_orbitRadius, m_orbitHeight, sin(m_orbitAngle) * m_orbitRadius) + m_focusCenter, m_focusCenter, glm::vec3(0.0, 1.0, 0.0));
 		constants->projMtx = glm::perspective(glm::radians(60.0f), float(amalthea->m_windowSize.x) / (amalthea->m_windowSize.y), 0.01f, 256.0f);
 
 		constants->projMtx[1].y = -constants->projMtx[1].y;
@@ -536,6 +542,8 @@ public:
 		constants->frameIndex = m_frameIndex;
 		constants->numRays = m_maxDepth;
 		constants->numBVHNodes = uint32(nodes.size());
+		
+		constants->ambientRadiance = m_ambientRadiance;
 
 		constantsHandle.Unmap();
 
@@ -546,8 +554,8 @@ public:
 			m_descSets[ctx.frameIndex]->SetStorage(m_vertexBuffer, 0, uint32(bvhVisStartVertex * sizeof(VertexAux)), 2, 0);
 			m_descSets[ctx.frameIndex]->SetBufferViewUniform(m_indexBufferView, 3, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_blueNoiseBuffer, 0, sizeof(_blueNoise), 4, 0);
-			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[(ctx.frameIndex - 1) % amalthea->m_frames.size()], EuropaImageLayout::General, 5, 0);
-			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews[ctx.frameIndex], EuropaImageLayout::General, 6, 0);
+			
+			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews, EuropaImageLayout::General, 6, 0);
 			m_descSets[ctx.frameIndex]->SetBufferViewUniform(m_vertexPosBufferView, 7, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_bvhBuffer, 0, uint32(nodes.size() * sizeof(BVHNode)), 8, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_rayStackBuffer, 0, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * m_maxDepth * sizeof(RayStack)), 9, 0);
@@ -585,19 +593,21 @@ public:
 						m_jobBuffer, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob)), 0,
 						EuropaAccessShaderWrite, EuropaAccessShaderRead,
 						EuropaPipelineStageComputeShader, EuropaPipelineStageComputeShader
-					); 
+					);
+
 					ctx.cmdlist->BindCompute(m_pipelineRaySort);
 					ctx.cmdlist->Dispatch(uint32(ceil(float(amalthea->m_windowSize.x) / 256.0f)), uint32(amalthea->m_windowSize.y), 1);
+
 					ctx.cmdlist->Barrier(
 						m_jobBuffer, uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob)), 0,
 						EuropaAccessShaderWrite, EuropaAccessShaderRead,
 						EuropaPipelineStageComputeShader, EuropaPipelineStageComputeShader
-					); 
+					);
 				}
 			}
 			
 			ctx.cmdlist->Barrier(
-				m_accumulationImages[ctx.frameIndex],
+				m_accumulationImages,
 				EuropaAccessNone, EuropaAccessShaderRead, EuropaImageLayout::General, EuropaImageLayout::General,
 				EuropaPipelineStageBottomOfPipe, EuropaPipelineStageFragmentShader
 			);
@@ -632,9 +642,9 @@ public:
 			ImGui::LabelText("", "CPU: %f ms", deltaTime * 1000.0);
 			ImGui::LabelText("", "FPS: %f", m_fps);
 
-			ImGui::DragFloat3("Center", &m_focusCenter.x);
+			if (ImGui::DragFloat3("Center", &m_focusCenter.x)) clear = true;
 			
-			ImGui::SliderInt("Max Depth", (int*)&m_maxDepth, 1, 5);
+			if (ImGui::SliderInt("Max Depth", (int*)&m_maxDepth, 1, 5)) clear = true;
 
 			ImGui::Checkbox("Ray Sorting", &m_raySort);
 			ImGui::SameLine();
@@ -657,12 +667,22 @@ public:
 		}
 		ImGui::End();
 
+		if (ImGui::Begin("Scene"))
+		{
+			ImGui::DragFloat3("Position", &lights[0].pos.x);
+			ImGui::DragFloat3("Radiance", &lights[0].radiance.r, 0.5, 0.0);
+			ImGui::DragFloat3("Ambient Radiance", &m_ambientRadiance.x, 0.5, 0.0);
+
+			if (ImGui::Button("Update"))
+			{
+				clear = true;
+				UpdateLights();
+			}
+		}
+
 		if (clear)
 		{
-			for (auto i : m_accumulationImages)
-			{
-				ctx.cmdlist->ClearImage(i, EuropaImageLayout::General, glm::vec4(0.0));
-			}
+			ctx.cmdlist->ClearImage(m_accumulationImages, EuropaImageLayout::General, glm::vec4(0.0));
 		}
 	};
 

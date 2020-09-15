@@ -7,20 +7,6 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 #include "structures.glsl"
 
-layout(binding = 0) uniform Constants {
-    mat4 viewMtx;
-    mat4 projMtx;
-    mat4 viewInvMtx;
-    mat4 projInvMtx;
-    vec2 viewportSize;
-    vec2 viewportBase;
-    uint numLights;
-    uint numTriangles;
-    uint frameIndex;
-    uint numRays;
-    uint numBVHNodes;
-};
-
 layout(std430, binding = 9) buffer stackBuffer
 {
     RayStackBuffer stack[];
@@ -31,16 +17,23 @@ layout(std430, binding = 10) buffer jobBuffer
     JobDesc jobGrid[];
 };
 
-shared uint count;
+shared uint lCount;
+shared uint rCount;
 
 void main()
 {
-    count = 0;
+    lCount = 0;
+    rCount = 0;
+
+    barrier();
+
+    if (gl_GlobalInvocationID.x > uint(viewportSize.x)) return;
 
     uint gridIndex = gl_GlobalInvocationID.y * uint(viewportSize.x) + gl_GlobalInvocationID.x;
     uint localIndex = gl_LocalInvocationIndex;
 
     uint baseIndex = gl_WorkGroupID.y * uint(viewportSize.x) + gl_WorkGroupID.x * gl_WorkGroupSize.x;
+    uint maxIndex = min(baseIndex + gl_WorkGroupSize.x, gl_WorkGroupID.y * uint(viewportSize.x) + uint(viewportSize.x));
 
     uint newIndex = 0xFFFFFFFF;
 
@@ -48,14 +41,15 @@ void main()
     
     if (job.index != 0xFFFFFFFF)
     {
-        newIndex = atomicAdd(count, 1);
+        newIndex = baseIndex + atomicAdd(lCount, 1);
     }
 
+    barrier();
     groupMemoryBarrier();
 
     jobGrid[gridIndex].index = 0xFFFFFFFF;
 
     groupMemoryBarrier();
 
-    if (newIndex != 0xFFFFFFFF) jobGrid[baseIndex + newIndex] = job;
+    if (newIndex != 0xFFFFFFFF) jobGrid[newIndex] = job;
 }
