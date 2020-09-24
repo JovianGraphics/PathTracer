@@ -27,9 +27,6 @@ namespace ImGui {
         const float circleEnd = size.x;
         const float circleWidth = circleEnd - circleStart;
 
-        window->DrawList->AddRectFilled(bb.Min, ImVec2(pos.x + circleStart, bb.Max.y), bg_col);
-        window->DrawList->AddRectFilled(bb.Min, ImVec2(pos.x + circleStart * value, bb.Max.y), fg_col);
-
         const float t = g.Time;
         const float r = size.y / 2;
         const float speed = 1.5f;
@@ -45,6 +42,12 @@ namespace ImGui {
         window->DrawList->AddCircleFilled(ImVec2(pos.x + circleEnd - o1, bb.Min.y + r), r, bg_col);
         window->DrawList->AddCircleFilled(ImVec2(pos.x + circleEnd - o2, bb.Min.y + r), r, bg_col);
         window->DrawList->AddCircleFilled(ImVec2(pos.x + circleEnd - o3, bb.Min.y + r), r, bg_col);
+
+        window->DrawList->AddRectFilled(bb.Min, ImVec2(pos.x + circleStart, bb.Max.y), bg_col);
+        window->DrawList->AddRectFilled(bb.Min, ImVec2(pos.x + circleStart * value, bb.Max.y), fg_col);
+        window->DrawList->AddCircleFilled(ImVec2(pos.x + circleStart, bb.Min.y + r), r, bg_col);
+        window->DrawList->AddCircleFilled(ImVec2(bb.Min.x, bb.Min.y + r), r, fg_col);
+        window->DrawList->AddCircleFilled(ImVec2(pos.x + circleStart * value, bb.Min.y + r), r, fg_col);
     }
 
 }
