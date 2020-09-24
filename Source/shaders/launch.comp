@@ -29,7 +29,7 @@ void main()
 {
     uvec2 launchIndex = gl_GlobalInvocationID.xy + uvec2(viewportBase);
     if (launchIndex.x >= viewportSize.x || launchIndex.y >= viewportSize.y) return;
-    int jitter = (blueNoise[(launchIndex.x & 0xFF) + ((launchIndex.y & 0xFF) << 8)] * 256 + blueNoise[frameIndex]);
+    uint jitter = (blueNoise[(launchIndex.x & 0xFF) + ((launchIndex.y & 0xFF) << 8)] * 256 + blueNoise[frameIndex]);
     
     vec4 projPos = vec4(((vec2(launchIndex) + WeylNth(jitter)) / viewportSize) * 2.0 - 1.0, 1.0, 1.0);
     vec4 viewPos = projInvMtx * projPos; viewPos /= viewPos.w;
@@ -47,5 +47,5 @@ void main()
     jobGrid[jobIndex].index = stackIndex;
 
     if (imageLoad(accumulation, ivec2(launchIndex)).a < 0.5)
-        stack[stackIndex].randState = uint(jitter);
+        stack[stackIndex].randState = jitter;
 }

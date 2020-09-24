@@ -54,16 +54,16 @@ uint rnd = 0;
 
 uint getRand()
 {
-    rnd = rnd * 16807 % 2147483647;
-    return rnd;
+    rnd = rnd * 1103515245 + 12345;
+    return rnd & 0x3FFFFFFF;
 }
 
 float getRandF()
 {
-    return float(float(getRand()) / 2147483647.0f);
+    return float(float(getRand()) / float(0x3FFFFFFF));
 }
 
-f16vec2 WeylNth(int n)
+f16vec2 WeylNth(uint n)
 {
 	return f16vec2(fract(vec2(n * 12664745, n * 9560333) / exp2(24.0)));
 }

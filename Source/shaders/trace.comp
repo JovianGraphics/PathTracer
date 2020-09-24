@@ -74,39 +74,63 @@ bool shadeHit(int jitter, int depth, vec3 hitPos, inout Intersection isect, inou
     if (dot(normal, f16vec3(r.d)) > 0.0) normal = -normal;
 
     // Direct Lighting
-    for (int i = 0; i < numLights; i++)
+    float coinFlip = getRandF();
+    float16_t falloff;
+    vec3 lightDir;
+    f16vec3 lightRadiance;
+
+    Intersection isectDirectLighting;
+    Ray rLight;
+
+    if (coinFlip < 0.5)
     {
+        uint i = 0;
+
         vec3 lightPos = lights[i].pos.xyz;
 
         vec3 posDiff = lightPos - hitPos;
         float dist = length(posDiff);
-        vec3 lightDir = posDiff / dist;
+        lightDir = posDiff / dist;
                     
-        Intersection isectDirectLighting;
-        Ray rLight;
-
         rLight.o = hitPos;
         rLight.d = lightDir;
+        rLight.origBvhId = r.origBvhId;
         rLight.rcpD = f16vec3(1.0 / rLight.d);
-        rLight.min_t = 0.00005;
+        rLight.min_t = 0.001;
         rLight.max_t = dist - 0.00005;
 
-        if (!traceRay(rLight, isectDirectLighting, true))
-        {
-            f16vec3 lightRadiance = f16vec3(lights[i].radiance.rgb);
-    
-            float16_t falloff = float16_t(1.0f / (dist * dist + 1.0f)) * max(0.0hf, dot(normal, f16vec3(lightDir)));
+        lightRadiance = f16vec3(lights[i].radiance.rgb);
 
-            // For delta material, this is kind of a hack (introduce a small bias), but point light source doesn't exist anyways ...
-            if (albedo.a > 0.5)
-                wIn += falloff * albedo.rgb * lightRadiance;
-            else
-                wIn += float16_t(dot(lightDir, r.d) > 0.995) * lightRadiance;
-        }
+        falloff = float16_t(1.0f / (dist * dist + 1.0f)) * max(0.0hf, dot(normal, f16vec3(lightDir)));
+    }
+    else
+    {
+        f16vec2 gridSample = WeylNth(getRand());
+        lightDir = vec3(to_coord_space(normal, cosineHemisphere(gridSample)));
+        
+        rLight.o = hitPos;
+        rLight.d = lightDir;
+        rLight.origBvhId = r.origBvhId;
+        rLight.rcpD = f16vec3(1.0 / rLight.d);
+        rLight.min_t = 0.001;
+        rLight.max_t = 1000.0;
+
+        lightRadiance = f16vec3(ambientRadiance);
+
+        falloff = 1.0hf;
+    }
+
+    if (!traceRay(rLight, isectDirectLighting, true))
+    {
+        // For delta material, this is kind of a hack (introduce a small bias), but point light source doesn't exist anyways ...
+        if (albedo.a > 0.5)
+            wIn += 2.0hf * falloff * albedo.rgb * lightRadiance;
+        else
+            wIn += 2.0hf * float16_t(dot(lightDir, r.d) > 0.995) * lightRadiance;
     }
 
     // Secondary Contribution
-    f16vec2 gridSample = f16vec2(getRandF(), getRandF());
+    f16vec2 gridSample = WeylNth(getRand()); //f16vec2(getRandF(), getRandF());
     vec3 nextDir = vec3(to_coord_space(normal, cosineHemisphere(gridSample)));
     
     if (albedo.a < 0.5)
@@ -160,14 +184,14 @@ void trace(uint jobIndex) {
 
     r.o = rayStack[stackIndex].rayOrigin;
     r.d = rayStack[stackIndex].rayDirection;
+    r.origBvhId = 0;
     r.rcpD = f16vec3(1.0 / r.d);
-    r.min_t = 0.01;
+    r.min_t = 0.001;
     r.max_t = 100000.0;
 
     if (!traceRay(r, isect, false))
     {
         rayStack[stackIndex].prob = 0.0hf;
-        if (currentDepth > 0) rayStack[stackIndex - 1].wIn += f16vec3(ambientRadiance);
         return;
     }
 

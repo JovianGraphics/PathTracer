@@ -7,6 +7,7 @@ layout(location = 0) out vec3 outColor;
 
 #include "structures.glsl"
 
+layout(binding = 5, rgba16f) uniform image2D currentImage;
 layout(binding = 6, rgba32f) uniform image2D accumulation;
 
 layout(std430, binding = 9) buffer stackBuffer
@@ -46,6 +47,8 @@ void main()
             L = vec3(0.0);
         }
     }
+
+    imageStore(currentImage, ivec2(gl_FragCoord.st), vec4(L, 1.0));
 
     vec4 acc = imageLoad(accumulation, ivec2(gl_FragCoord.st));
     acc += vec4(L, 1.0);

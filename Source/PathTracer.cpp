@@ -9,16 +9,21 @@
 #include "trace.comp.h"
 #include "trace_speculative.comp.h"
 #include "launch.comp.h"
-#include "raysortX.comp.h"
-#include "raysortY.comp.h"
-#include "raysortZ.comp.h"
+#include "raysort.comp.h"
 #include "visualize.frag.h"
 #include "visualize.vert.h"
 #include "composite.frag.h"
 #include "composite.vert.h"
 
 #include <thread>
+#include <atomic>
 #include <chrono>
+#include <fstream>
+
+extern "C"
+{
+#include "miniz.h"
+}
 
 #include <glm/gtx/transform.hpp>
 #include <glm/gtc/type_precision.hpp>
@@ -44,55 +49,72 @@ class TestApp
 public:
 	Amalthea m_amalthea;
 
-	EuropaBuffer::Ref m_vertexPosBuffer;
-	EuropaBufferView::Ref m_vertexPosBufferView;
-	EuropaBuffer::Ref m_vertexBuffer;
-	EuropaBuffer::Ref m_indexBuffer;
-	EuropaBufferView::Ref m_indexBufferView;
-	EuropaBuffer::Ref m_lightsBuffer;
-	EuropaBuffer::Ref m_blueNoiseBuffer;
-	EuropaBuffer::Ref m_bvhBuffer;
-	EuropaBuffer::Ref m_rayStackBuffer;
-	EuropaBuffer::Ref m_jobBuffer;
+	// GFX data
+	struct {
+		EuropaBuffer::Ref m_vertexPosBuffer;
+		EuropaBufferView::Ref m_vertexPosBufferView;
+		EuropaBuffer::Ref m_vertexBuffer;
+		EuropaBuffer::Ref m_indexBuffer;
+		EuropaBufferView::Ref m_indexBufferView;
+		EuropaBuffer::Ref m_lightsBuffer;
+		EuropaBuffer::Ref m_blueNoiseBuffer;
+		EuropaBuffer::Ref m_bvhBuffer;
+		EuropaBuffer::Ref m_rayStackBuffer;
+		EuropaBuffer::Ref m_jobBuffer;
 
-	EuropaImage::Ref m_depthImage;
-	EuropaImageView::Ref m_depthView;
+		EuropaImage::Ref m_depthImage;
+		EuropaImageView::Ref m_depthView;
 
-	EuropaRenderPass::Ref m_mainRenderPass;
+		EuropaRenderPass::Ref m_mainRenderPass;
 
-	EuropaDescriptorPool::Ref m_descPool;
-	EuropaPipeline::Ref m_pipeline;
-	EuropaPipeline::Ref m_pipelineSpeculative;
-	EuropaPipeline::Ref m_pipelineRayLaunch;
-	EuropaPipeline::Ref m_pipelineRaySort;
-	EuropaPipeline::Ref m_pipelineComposite;
-	EuropaPipeline::Ref m_pipelineVis;
-	EuropaPipeline::Ref m_pipelineVisLine;
-	EuropaPipelineLayout::Ref m_pipelineLayout;
+		EuropaDescriptorPool::Ref m_descPool;
+		EuropaPipeline::Ref m_pipeline;
+		EuropaPipeline::Ref m_pipelineSpeculative;
+		EuropaPipeline::Ref m_pipelineRayLaunch;
+		EuropaPipeline::Ref m_pipelineRaySort;
+		EuropaPipeline::Ref m_pipelineComposite;
+		EuropaPipeline::Ref m_pipelineVis;
+		EuropaPipeline::Ref m_pipelineVisLine;
+		EuropaPipelineLayout::Ref m_pipelineLayout;
 
-	std::vector<EuropaDescriptorSet::Ref> m_descSets;
-	std::vector<EuropaFramebuffer::Ref> m_frameBuffers;
+		std::vector<EuropaDescriptorSet::Ref> m_descSets;
+		std::vector<EuropaFramebuffer::Ref> m_frameBuffers;
 
-	EuropaImage::Ref m_accumulationImages;
-	EuropaImageView::Ref m_accumulationImageViews;
+		EuropaImage::Ref m_accumulationImages;
+		EuropaImageView::Ref m_accumulationImageViews;
+		EuropaImage::Ref m_currentImage;
+		EuropaImageView::Ref m_currentImageView;
 
-	uint32 m_frameIndex = 0;
-	uint32 m_maxDepth = 5;
-	uint32 m_constantsSize;
-	bool m_visualize = false;
-	bool m_raySort = true;
+		std::vector<EuropaBuffer::Ref> m_currentImageCpuBuffers;
+	};
 
-	glm::vec3 m_focusCenter = glm::vec3(0.0, 0.0, 0.0);
-	float m_orbitHeight = 0.5;
-	float m_orbitRadius = 3.0;
-	float m_orbitAngle = 0.0;
+	// Options & settings
+	struct {
+		uint32 m_frameIndex = 0;
+		uint32 m_maxDepth = 5;
+		uint32 m_constantsSize;
+		bool m_visualize = false;
+		bool m_raySort = true;
+		bool m_dumpData = false;
+	};
 
-	glm::vec3 m_ambientRadiance = glm::vec3(0.4, 0.5, 0.7);
+	// Scene parameters
+	struct {
+		glm::vec3 m_focusCenter = glm::vec3(0.0, 0.0, 0.0);
+		float m_orbitHeight = 0.5;
+		float m_orbitRadius = 3.0;
+		float m_orbitAngle = 0.0;
 
-	GanymedeScrollingBuffer m_frameTimeLog = GanymedeScrollingBuffer(1000, 0);
-	GanymedeScrollingBuffer m_frameRateLog = GanymedeScrollingBuffer(1000, 0);
-	uint32 m_frameCount = 0;
-	float m_fps = 0.0;
+		glm::vec3 m_ambientRadiance = glm::vec3(0.4, 0.5, 0.7);
+	};
+
+	// Peformance trackers
+	struct {
+		GanymedeScrollingBuffer m_frameTimeLog = GanymedeScrollingBuffer(1000, 0);
+		GanymedeScrollingBuffer m_frameRateLog = GanymedeScrollingBuffer(1000, 0);
+		uint32 m_frameCount = 0;
+		float m_fps = 0.0;
+	};
 
 	void UpdateLights()
 	{
@@ -104,6 +126,107 @@ public:
 		m_lightsBuffer = m_amalthea.m_device->CreateBuffer(lightBufferInfo);
 
 		m_amalthea.m_transferUtil->UploadToBufferEx(m_lightsBuffer, lights.data(), uint32(lights.size()));
+	}
+
+	// Write-out related data / structures
+	struct {
+		std::vector<char*> writeBuffers;
+		std::vector<uint32> writeIndex;
+		std::vector<uint32> writeSizes;
+		std::atomic<uint32> workInWriteQueue = 0;
+
+		std::condition_variable writeJobAvailable;
+		std::mutex writeJobQueueLock;
+
+		std::vector<std::thread> workers;
+		bool terminate = false;
+	};
+
+	void WriteWorker()
+	{
+		while (!terminate)
+		{
+			std::unique_lock<std::mutex> lk(writeJobQueueLock);
+			writeJobAvailable.wait(lk, [&] { return terminate || writeBuffers.size() > 0; });
+
+			if (writeBuffers.empty())
+			{
+				lk.unlock();
+				if (terminate)
+					break;
+				else
+					continue;
+			}
+
+			uint32 index = writeIndex.back();
+			char* buffer = writeBuffers.back();
+			uint32 size = writeSizes.back();
+
+			GanymedePrint "Writing", index;
+
+			writeIndex.pop_back();
+			writeBuffers.pop_back();
+			writeSizes.pop_back();
+
+			lk.unlock();
+
+			std::stringstream ss;
+			ss << "RayStackBuffer_" << index << ".bin.z";
+
+			mz_ulong compressedSizeEst = mz_compressBound(size);
+			uint8* compressed = (uint8*) malloc(compressedSizeEst);
+			mz_ulong compressedSize = compressedSizeEst;
+			int result = mz_compress2(compressed, &compressedSize, (uint8*)buffer, size, MZ_DEFAULT_LEVEL);
+			if (result != MZ_OK)
+			{
+				GanymedePrint "miniz returned", mz_error(result), '(', result, ')';
+				throw std::runtime_error("miniz deflate error");
+			}
+
+			std::ofstream file;
+			file.open(ss.str(), std::ofstream::out | std::ofstream::binary);
+			file.write((char*)compressed, compressedSize);
+			file.close();
+
+			ss << ".txt";
+
+			file.open(ss.str(), std::ofstream::out);
+			file << m_amalthea.m_windowSize.x << "," << m_amalthea.m_windowSize.y << std::endl;
+			file.close();
+
+			free(compressed);
+			free(buffer);
+
+			workInWriteQueue -= 1;
+		}
+	};
+	void WriteBuffer(EuropaBuffer::Ref buffer, uint32 index, uint32 size)
+	{
+		auto start = std::chrono::high_resolution_clock::now();
+
+		char* mapped = buffer->Map<char>();
+		char* copy = (char*)malloc(size);
+
+		memcpy(copy, mapped, size);
+
+		buffer->Unmap();
+
+		auto end = std::chrono::high_resolution_clock::now();
+
+		GanymedePrint "Copy finished", index, std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() * 1000.0, "ms";
+
+		{
+			while (workInWriteQueue > 64)
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			std::lock_guard<std::mutex> lk(writeJobQueueLock);
+			workInWriteQueue++;
+			writeBuffers.push_back(copy);
+			writeIndex.push_back(index);
+			writeSizes.push_back(size);
+			writeJobAvailable.notify_one();
+		}
 	}
 
 	AmaltheaBehaviors::OnCreateDevice f_onCreateDevice = [&](Amalthea* amalthea)
@@ -198,10 +321,28 @@ public:
 			{
 				GanymedePrint "Key", keyAscii, keyV, IoKeyboardEventToString(ev);
 			});
+
+		for (int i = 0; i < std::thread::hardware_concurrency(); i++)
+		{
+			workers.push_back(std::thread([&] { WriteWorker(); }));
+		}
 	};
 
 	AmaltheaBehaviors::OnDestroyDevice f_onDestroyDevice = [&](Amalthea* amalthea)
 	{
+		while (!writeBuffers.empty())
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+
+		terminate = true;
+
+		writeJobAvailable.notify_all();
+
+		for (auto& w : workers)
+		{
+			w.join();
+		}
 	};
 
 	AmaltheaBehaviors::OnCreateSwapChain f_onCreateSwapChain = [&](Amalthea* amalthea)
@@ -233,33 +374,74 @@ public:
 		m_accumulationImages = nullptr;
 		m_accumulationImageViews = nullptr;
 
-		EuropaImageInfo info;
-		info.width = m_amalthea.m_windowSize.x;
-		info.height = m_amalthea.m_windowSize.y;
-		info.initialLayout = EuropaImageLayout::General;
-		info.type = EuropaImageType::Image2D;
-		info.format = EuropaImageFormat::RGBA32F;
-		info.usage = EuropaImageUsage(EuropaImageUsageStorage | EuropaImageUsageTransferSrc | EuropaImageUsageTransferDst);
-		info.memoryUsage = EuropaMemoryUsage::GpuOnly;
+		{
+			EuropaImageInfo info;
+			info.width = m_amalthea.m_windowSize.x;
+			info.height = m_amalthea.m_windowSize.y;
+			info.initialLayout = EuropaImageLayout::General;
+			info.type = EuropaImageType::Image2D;
+			info.format = EuropaImageFormat::RGBA32F;
+			info.usage = EuropaImageUsage(EuropaImageUsageStorage | EuropaImageUsageTransferSrc | EuropaImageUsageTransferDst);
+			info.memoryUsage = EuropaMemoryUsage::GpuOnly;
 
-		m_accumulationImages = m_amalthea.m_device->CreateImage(info);
+			m_accumulationImages = m_amalthea.m_device->CreateImage(info);
 
-		EuropaImageViewCreateInfo viewInfo;
-		viewInfo.format = EuropaImageFormat::RGBA32F;
-		viewInfo.image = m_accumulationImages;
-		viewInfo.type = EuropaImageViewType::View2D;
-		viewInfo.minArrayLayer = 0;
-		viewInfo.minMipLevel = 0;
-		viewInfo.numArrayLayers = 1;
-		viewInfo.numMipLevels = 1;
+			EuropaImageViewCreateInfo viewInfo;
+			viewInfo.format = EuropaImageFormat::RGBA32F;
+			viewInfo.image = m_accumulationImages;
+			viewInfo.type = EuropaImageViewType::View2D;
+			viewInfo.minArrayLayer = 0;
+			viewInfo.minMipLevel = 0;
+			viewInfo.numArrayLayers = 1;
+			viewInfo.numMipLevels = 1;
 
-		m_accumulationImageViews = m_amalthea.m_device->CreateImageView(viewInfo);
+			m_accumulationImageViews = m_amalthea.m_device->CreateImageView(viewInfo);
+		}
+
+		// Create Current Sampled Image
+		m_currentImage = nullptr;
+		m_currentImageView = nullptr;
+
+		{
+			EuropaImageInfo info;
+			info.width = m_amalthea.m_windowSize.x;
+			info.height = m_amalthea.m_windowSize.y;
+			info.initialLayout = EuropaImageLayout::General;
+			info.type = EuropaImageType::Image2D;
+			info.format = EuropaImageFormat::RGBA16F;
+			info.usage = EuropaImageUsage(EuropaImageUsageStorage | EuropaImageUsageTransferSrc | EuropaImageUsageTransferDst);
+			info.memoryUsage = EuropaMemoryUsage::GpuOnly;
+
+			m_currentImage = m_amalthea.m_device->CreateImage(info);
+
+			EuropaImageViewCreateInfo viewInfo;
+			viewInfo.format = EuropaImageFormat::RGBA16F;
+			viewInfo.image = m_currentImage;
+			viewInfo.type = EuropaImageViewType::View2D;
+			viewInfo.minArrayLayer = 0;
+			viewInfo.minMipLevel = 0;
+			viewInfo.numArrayLayers = 1;
+			viewInfo.numMipLevels = 1;
+
+			m_currentImageView = m_amalthea.m_device->CreateImageView(viewInfo);
+
+			EuropaBufferInfo cpuBufferInfo;
+			cpuBufferInfo.exclusive = true;
+			cpuBufferInfo.size = uint32(m_amalthea.m_windowSize.x * m_amalthea.m_windowSize.y * sizeof(glm::u16vec4));
+			cpuBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageTransferDst);
+			cpuBufferInfo.memoryUsage = EuropaMemoryUsage::Gpu2Cpu;
+
+			for (auto f : m_amalthea.m_frames)
+			{
+				m_currentImageCpuBuffers.push_back(m_amalthea.m_device->CreateBuffer(cpuBufferInfo));
+			}
+		}
 
 		// Create Ray Stack
 		EuropaBufferInfo rayStackInfo;
 		rayStackInfo.exclusive = true;
 		rayStackInfo.size = uint32(m_amalthea.m_windowSize.x * m_amalthea.m_windowSize.y * 5 * sizeof(RayStack));
-		rayStackInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage);
+		rayStackInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferSrc);
 		rayStackInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_rayStackBuffer = m_amalthea.m_device->CreateBuffer(rayStackInfo);
 
@@ -267,7 +449,7 @@ public:
 		EuropaBufferInfo jobBufferInfo;
 		jobBufferInfo.exclusive = true;
 		jobBufferInfo.size = uint32(amalthea->m_windowSize.x * amalthea->m_windowSize.y * sizeof(RayJob));
-		jobBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage);
+		jobBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferSrc);
 		jobBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
 		m_jobBuffer = amalthea->m_device->CreateBuffer(jobBufferInfo);
 
@@ -341,7 +523,7 @@ public:
 		}
 
 		{
-			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_raysortX_comp_h, sizeof(shader_spv_raysortX_comp_h));
+			EuropaShaderModule::Ref shader = amalthea->m_device->CreateShaderModule(shader_spv_raysort_comp_h, sizeof(shader_spv_raysort_comp_h));
 
 			EuropaShaderStageInfo stage = { EuropaShaderStageCompute, shader, "main" };
 
@@ -555,6 +737,7 @@ public:
 			m_descSets[ctx.frameIndex]->SetBufferViewUniform(m_indexBufferView, 3, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_blueNoiseBuffer, 0, sizeof(_blueNoise), 4, 0);
 			
+			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_currentImageView, EuropaImageLayout::General, 5, 0);
 			m_descSets[ctx.frameIndex]->SetImageViewStorage(m_accumulationImageViews, EuropaImageLayout::General, 6, 0);
 			m_descSets[ctx.frameIndex]->SetBufferViewUniform(m_vertexPosBufferView, 7, 0);
 			m_descSets[ctx.frameIndex]->SetStorage(m_bvhBuffer, 0, uint32(nodes.size() * sizeof(BVHNode)), 8, 0);
@@ -632,6 +815,29 @@ public:
 		}
 		ctx.cmdlist->EndRenderpass();
 
+		if (m_dumpData)
+		{
+			ctx.cmdlist->Barrier(
+				m_currentImage,
+				EuropaAccessNone, EuropaAccessNone, EuropaImageLayout::General, EuropaImageLayout::TransferSrc,
+				EuropaPipelineStageBottomOfPipe, EuropaPipelineStageTransfer
+			);
+
+			uint32 size = uint32((m_amalthea.m_windowSize.x * m_amalthea.m_windowSize.y) * sizeof(glm::u16vec4));
+			WriteBuffer(m_currentImageCpuBuffers[ctx.frameIndex], m_frameIndex, size);
+			ctx.cmdlist->CopyImageToBuffer(
+				m_currentImageCpuBuffers[ctx.frameIndex], m_currentImage, EuropaImageLayout::TransferSrc,
+				0, m_amalthea.m_windowSize.x, m_amalthea.m_windowSize.y,
+				glm::uvec3(0), glm::uvec3(m_amalthea.m_windowSize.x, m_amalthea.m_windowSize.y, 1), 0
+			);
+
+			ctx.cmdlist->Barrier(
+				m_currentImage,
+				EuropaAccessNone, EuropaAccessNone, EuropaImageLayout::TransferSrc, EuropaImageLayout::General,
+				EuropaPipelineStageTransfer, EuropaPipelineStageTopOfPipe
+			);
+		}
+
 		m_fps = m_fps * 0.7f + 0.3f * glm::clamp(1.0f / deltaTime, m_fps - 10.0f, m_fps + 10.0f);
 		m_frameTimeLog.AddPoint(time, deltaTime * 1000.0f);
 		m_frameRateLog.AddPoint(time, m_fps);
@@ -651,6 +857,8 @@ public:
 			ImGui::Checkbox("Visualization", &m_visualize);
 			ImGui::SameLine();
 			if (ImGui::Button("Reset Image")) clear = true;
+
+			ImGui::Checkbox("Dump Data", &m_dumpData);
 
 			ImPlot::SetNextPlotLimitsX(time - 5.0, time, ImGuiCond_Always);
 			ImPlot::SetNextPlotLimitsY(0.0, 40.0, ImGuiCond_Once, 0);
@@ -679,6 +887,7 @@ public:
 				UpdateLights();
 			}
 		}
+		ImGui::End();
 
 		if (clear)
 		{

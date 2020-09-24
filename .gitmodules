@@ -1,3 +1,6 @@
 [submodule "JovianGraphics"]
 	path = JovianGraphics
 	url = https://github.com/JovianGraphics/JovianGraphics
+[submodule "Source/ext/miniz"]
+	path = Source/ext/miniz
+	url = https://github.com/richgel999/miniz

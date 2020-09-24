@@ -93,7 +93,10 @@ add_dependencies(PathTracer Shaders)
 
 set_property(TARGET PathTracer PROPERTY CXX_STANDARD 17)
 
-target_link_libraries(PathTracer PUBLIC Amalthea Io Europa Himalia Ganymede)
-target_include_directories(PathTracer PUBLIC ${JovianIncludeDir} Source)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "build miniz as static" FORCE)
+add_subdirectory(Source/ext/miniz)
+
+target_link_libraries(PathTracer PUBLIC Amalthea Io Europa Himalia Ganymede miniz)
+target_include_directories(PathTracer PUBLIC ${JovianIncludeDir} Source Source/ext/miniz)
 
 include_directories(Source)

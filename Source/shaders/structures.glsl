@@ -16,6 +16,7 @@ struct Ray
     float min_t;
     vec3 d;
     float max_t;
+    uint origBvhId;
     f16vec3 rcpD;
 };
 

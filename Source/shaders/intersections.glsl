@@ -59,12 +59,16 @@ bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
     bool hit = false;
 
     uint index = 0;
+    uint hitIndex = 0;
 
     while (index < numBVHNodes)
     {
-        BVHNode node = bvh[index];
+        //BVHNode node = bvh[index];
 
-        bool bboxIsectResult = intersectBBox(r, node.a, node.b);
+        vec3 a = bvh[index].a;
+        vec3 b = bvh[index].b;
+
+        bool bboxIsectResult = intersectBBox(r, a, b);
 
         #ifdef SPECULATIVE
         if (anyInvocationARB(bboxIsectResult))
@@ -72,34 +76,40 @@ bool traceRay(inout Ray r, out Intersection isect, bool stopIfHit)
         if (bboxIsectResult)
         #endif
         {
-            if (node.right <= 0)
+            int right = bvh[index].right;
+
+            if (right <= 0 && (r.origBvhId == 0 || r.origBvhId != index))
             {
                 // Leaf node
                 Triangle tri;
 
-                ivec3 index = ivec3(texelFetch(indicies, -node.right / 3).xyz);
+                ivec3 tindex = ivec3(texelFetch(indicies, -right / 3).xyz);
 
-                tri.i1 = index.x;
-                tri.i2 = index.y;
-                tri.i3 = index.z;
+                tri.i1 = tindex.x;
+                tri.i2 = tindex.y;
+                tri.i3 = tindex.z;
 
-                tri.p1 = texelFetch(vertices, index.x).xyz;
-                tri.p2 = texelFetch(vertices, index.y).xyz;
-                tri.p3 = texelFetch(vertices, index.z).xyz;
+                tri.p1 = texelFetch(vertices, tindex.x).xyz;
+                tri.p2 = texelFetch(vertices, tindex.y).xyz;
+                tri.p3 = texelFetch(vertices, tindex.z).xyz;
 
-                hit = intersect(r, tri, isect) || hit;
-
-                if (hit && stopIfHit) return true;
+                if (intersect(r, tri, isect))
+                {
+                    hit = true;
+                    if (stopIfHit) return true;
+                    hitIndex = index;
+                }
             }
 
             index++;
         }
         else
         {
-            index = node.next;
+            index = bvh[index].next;
             if (index == 0) return hit;
         }
     }
 
+    r.origBvhId = int(hitIndex);
     return hit;
 }
