@@ -80,12 +80,13 @@ inline BBox ComputeBBox(const std::vector<glm::vec4>& vertices, const std::vecto
     return bbox;
 }
 
-std::vector<BVHNode> BuildBVH(const std::vector<glm::vec4>& vertices, std::vector<uint32>& indices)
+std::vector<BVHNode> BuildBVH(const std::vector<glm::vec4>& vertices, std::vector<uint32>& indices, float& progress)
 {
     std::vector<BVHNode> nodes;
     std::vector<BuildBVHTask> tasks;
     nodes.reserve(indices.size() / 3 * 2);
     tasks.reserve(size_t(log2(indices.size())));
+    uint32 processedTriangles = 0;
 
     tasks.push_back({ ComputeBBox(vertices, indices, 0, indices.size()), 0, uint32(indices.size()), 0, false, 0 });
 
@@ -121,6 +122,9 @@ std::vector<BVHNode> BuildBVH(const std::vector<glm::vec4>& vertices, std::vecto
             if (end - start != 3) throw std::runtime_error("Non-triangle found in primitives");
 
             node.right = -int32(start);
+
+            processedTriangles++;
+            progress = float(processedTriangles) / float(indices.size() / 3);
 
             continue;
         }

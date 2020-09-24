@@ -33,6 +33,8 @@ extern "C"
 #include "ShaderData.h"
 #include "BVH.h"
 
+#include "ImGuiExtensions.h"
+
 std::vector<glm::vec4> vertexPosition;
 std::vector<VertexAux> vertexAuxilary;
 std::vector<uint32> indices;
@@ -100,6 +102,10 @@ public:
 
 	// Scene parameters
 	struct {
+		bool sceneLoaded = false;
+
+		std::string m_sceneFile = "../Models/cubeBinary.ply";
+
 		glm::vec3 m_focusCenter = glm::vec3(0.0, 0.0, 0.0);
 		float m_orbitHeight = 0.5;
 		float m_orbitRadius = 3.0;
@@ -114,6 +120,7 @@ public:
 		GanymedeScrollingBuffer m_frameRateLog = GanymedeScrollingBuffer(1000, 0);
 		uint32 m_frameCount = 0;
 		float m_fps = 0.0;
+		float m_bvhBuildProgress = 0.0f;
 	};
 
 	void UpdateLights()
@@ -231,119 +238,117 @@ public:
 
 	AmaltheaBehaviors::OnCreateDevice f_onCreateDevice = [&](Amalthea* amalthea)
 	{
-		// Load Model
-		HimaliaPlyModel plyModel;
+		m_bvhBuildProgress = 0.0f;
 
-		//plyModel.LoadFile("../Models/CBbunny.ply");
-		//plyModel.LoadFile("../Models/CBdragon.ply");
-		//plyModel.LoadFile("../Models/CBmonkey.ply");
-		//plyModel.LoadFile("../Models/minecraft.ply");
-		//plyModel.LoadFile("../Models/cornellBox.ply");
-		plyModel.LoadFile("../Models/sponza.ply");
-		//plyModel.LoadFile("../Models/conference.ply");
-		//plyModel.LoadFile("../Models/livingRoom.ply");
-		//plyModel.LoadFile("../Models/SanMiguel.ply");
+		// ASYNC loading
+		std::thread loading_thread([&](Amalthea* amalthea) {
+			// Load Model
+			HimaliaPlyModel plyModel;
 
-		HimaliaVertexProperty vertexFormatAux[] = {
-			HimaliaVertexProperty::Normal,
-			HimaliaVertexProperty::ColorRGBA8
-		};
-		uint32 alignments[] = {
-			0, offsetof(VertexAux, VertexAux::color)
-		};
-		plyModel.mesh.BuildVertices<VertexAux>(vertexAuxilary, 2, vertexFormatAux, alignments);
+			plyModel.LoadFile(m_sceneFile);
+
+			HimaliaVertexProperty vertexFormatAux[] = {
+				HimaliaVertexProperty::Normal,
+				HimaliaVertexProperty::ColorRGBA8
+			};
+			uint32 alignments[] = {
+				0, offsetof(VertexAux, VertexAux::color)
+			};
+			plyModel.mesh.BuildVertices<VertexAux>(vertexAuxilary, 2, vertexFormatAux, alignments);
+
+			HimaliaVertexProperty vertexFormat = HimaliaVertexProperty::Position;
+			plyModel.mesh.BuildVertices<glm::vec4>(vertexPosition, 1, &vertexFormat);
+
+			plyModel.mesh.BuildIndices<uint32>(indices);
+
+			bvhVisStartIndex = uint32(indices.size());
+			bvhVisStartVertex = uint32(vertexPosition.size());
+
+			nodes = BuildBVH(vertexPosition, indices, m_bvhBuildProgress);
+
+			VisualizeBVH(nodes, vertexPosition, vertexAuxilary, indices);
+
+			// Create & Upload geometry buffers
+			EuropaBufferInfo vertexBufferInfo;
+			vertexBufferInfo.exclusive = true;
+			vertexBufferInfo.size = uint32(vertexAuxilary.size() * sizeof(VertexAux));
+			vertexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageVertex | EuropaBufferUsageTransferDst);
+			vertexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+			m_vertexBuffer = amalthea->m_device->CreateBuffer(vertexBufferInfo);
+
+			amalthea->m_transferUtil->UploadToBufferEx(m_vertexBuffer, vertexAuxilary.data(), uint32(vertexAuxilary.size()));
+
+			EuropaBufferInfo vertexBufferPosInfo;
+			vertexBufferPosInfo.exclusive = true;
+			vertexBufferPosInfo.size = uint32(vertexPosition.size() * sizeof(glm::vec4));
+			vertexBufferPosInfo.usage = EuropaBufferUsage(EuropaBufferUsageUniformTexel | EuropaBufferUsageVertex | EuropaBufferUsageTransferDst);
+			vertexBufferPosInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+			m_vertexPosBuffer = amalthea->m_device->CreateBuffer(vertexBufferPosInfo);
+
+			amalthea->m_transferUtil->UploadToBufferEx(m_vertexPosBuffer, vertexPosition.data(), uint32(vertexPosition.size()));
+
+			m_vertexPosBufferView = amalthea->m_device->CreateBufferView(m_vertexPosBuffer, vertexBufferPosInfo.size, 0, EuropaImageFormat::RGBA32F);
+
+			EuropaBufferInfo indexBufferInfo;
+			indexBufferInfo.exclusive = true;
+			indexBufferInfo.size = uint32(indices.size() * sizeof(uint32));
+			indexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageUniformTexel | EuropaBufferUsageIndex | EuropaBufferUsageTransferDst);
+			indexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+			m_indexBuffer = amalthea->m_device->CreateBuffer(indexBufferInfo);
+
+			m_indexBufferView = amalthea->m_device->CreateBufferView(m_indexBuffer, uint32(bvhVisStartIndex * sizeof(uint32)), 0, EuropaImageFormat::RGB32UI);
+
+			amalthea->m_transferUtil->UploadToBufferEx(m_indexBuffer, indices.data(), uint32(indices.size()));
+
+			UpdateLights();
+
+			EuropaBufferInfo blueNoiseBufferInfo;
+			blueNoiseBufferInfo.exclusive = true;
+			blueNoiseBufferInfo.size = sizeof(_blueNoise);
+			blueNoiseBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
+			blueNoiseBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+			m_blueNoiseBuffer = amalthea->m_device->CreateBuffer(blueNoiseBufferInfo);
+
+			amalthea->m_transferUtil->UploadToBufferEx(m_blueNoiseBuffer, _blueNoise, sizeof(_blueNoise) / sizeof(uint16));
+
+			EuropaBufferInfo bvhBufferInfo;
+			bvhBufferInfo.exclusive = true;
+			bvhBufferInfo.size = uint32(nodes.size() * sizeof(BVHNode));
+			bvhBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
+			bvhBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
+			m_bvhBuffer = amalthea->m_device->CreateBuffer(bvhBufferInfo);
+
+			amalthea->m_transferUtil->UploadToBufferEx(m_bvhBuffer, nodes.data(), uint32(nodes.size()));
 		
-		HimaliaVertexProperty vertexFormat = HimaliaVertexProperty::Position;
-		plyModel.mesh.BuildVertices<glm::vec4>(vertexPosition, 1, &vertexFormat);
-		
-		plyModel.mesh.BuildIndices<uint32>(indices);
+			sceneLoaded = true;
+		}, amalthea);
 
-		bvhVisStartIndex = uint32(indices.size());
-		bvhVisStartVertex = uint32(vertexPosition.size());
-
-		nodes = BuildBVH(vertexPosition, indices);
-
-		VisualizeBVH(nodes, vertexPosition, vertexAuxilary, indices);
-
-		// Create & Upload geometry buffers
-		EuropaBufferInfo vertexBufferInfo;
-		vertexBufferInfo.exclusive = true;
-		vertexBufferInfo.size = uint32(vertexAuxilary.size() * sizeof(VertexAux));
-		vertexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageVertex | EuropaBufferUsageTransferDst);
-		vertexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
-		m_vertexBuffer = amalthea->m_device->CreateBuffer(vertexBufferInfo);
-
-		amalthea->m_transferUtil->UploadToBufferEx(m_vertexBuffer, vertexAuxilary.data(), uint32(vertexAuxilary.size()));
-
-		EuropaBufferInfo vertexBufferPosInfo;
-		vertexBufferPosInfo.exclusive = true;
-		vertexBufferPosInfo.size = uint32(vertexPosition.size() * sizeof(glm::vec4));
-		vertexBufferPosInfo.usage = EuropaBufferUsage(EuropaBufferUsageUniformTexel | EuropaBufferUsageVertex | EuropaBufferUsageTransferDst);
-		vertexBufferPosInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
-		m_vertexPosBuffer = amalthea->m_device->CreateBuffer(vertexBufferPosInfo);
-
-		amalthea->m_transferUtil->UploadToBufferEx(m_vertexPosBuffer, vertexPosition.data(), uint32(vertexPosition.size()));
-
-		m_vertexPosBufferView = amalthea->m_device->CreateBufferView(m_vertexPosBuffer, vertexBufferPosInfo.size, 0, EuropaImageFormat::RGBA32F);
-
-		EuropaBufferInfo indexBufferInfo;
-		indexBufferInfo.exclusive = true;
-		indexBufferInfo.size = uint32(indices.size() * sizeof(uint32));
-		indexBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageUniformTexel | EuropaBufferUsageIndex | EuropaBufferUsageTransferDst);
-		indexBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
-		m_indexBuffer = amalthea->m_device->CreateBuffer(indexBufferInfo);
-
-		m_indexBufferView = amalthea->m_device->CreateBufferView(m_indexBuffer, uint32(bvhVisStartIndex * sizeof(uint32)), 0, EuropaImageFormat::RGB32UI);
-
-		amalthea->m_transferUtil->UploadToBufferEx(m_indexBuffer, indices.data(), uint32(indices.size()));
-
-		UpdateLights();
-
-		EuropaBufferInfo blueNoiseBufferInfo;
-		blueNoiseBufferInfo.exclusive = true;
-		blueNoiseBufferInfo.size = sizeof(_blueNoise);
-		blueNoiseBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
-		blueNoiseBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
-		m_blueNoiseBuffer = amalthea->m_device->CreateBuffer(blueNoiseBufferInfo);
-
-		amalthea->m_transferUtil->UploadToBufferEx(m_blueNoiseBuffer, _blueNoise, sizeof(_blueNoise) / sizeof(uint16));
-
-		EuropaBufferInfo bvhBufferInfo;
-		bvhBufferInfo.exclusive = true;
-		bvhBufferInfo.size = uint32(nodes.size() * sizeof(BVHNode));
-		bvhBufferInfo.usage = EuropaBufferUsage(EuropaBufferUsageStorage | EuropaBufferUsageTransferDst);
-		bvhBufferInfo.memoryUsage = EuropaMemoryUsage::GpuOnly;
-		m_bvhBuffer = amalthea->m_device->CreateBuffer(bvhBufferInfo);
-
-		amalthea->m_transferUtil->UploadToBufferEx(m_bvhBuffer, nodes.data(), uint32(nodes.size()));
+		loading_thread.detach();
 
 		amalthea->m_ioSurface->SetKeyCallback([](uint8 keyAscii, uint16 keyV, std::string, IoKeyboardEvent ev)
 			{
 				GanymedePrint "Key", keyAscii, keyV, IoKeyboardEventToString(ev);
 			});
-
-		for (int i = 0; i < std::thread::hardware_concurrency(); i++)
-		{
-			workers.push_back(std::thread([&] { WriteWorker(); }));
-		}
 	};
 
 	AmaltheaBehaviors::OnDestroyDevice f_onDestroyDevice = [&](Amalthea* amalthea)
 	{
-		while (!writeBuffers.empty())
-		{
-			std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		}
+		vertexPosition.clear(); vertexPosition.shrink_to_fit();
+		vertexAuxilary.clear(); vertexAuxilary.shrink_to_fit();
+		indices.clear(); indices.shrink_to_fit();
 
-		terminate = true;
-
-		writeJobAvailable.notify_all();
-
-		for (auto& w : workers)
-		{
-			w.join();
-		}
+		sceneLoaded = false;
 	};
+
+	void ReloadScene()
+	{
+		f_onDestroyDevice(&m_amalthea);
+		m_amalthea.m_cmdQueue->WaitIdle();
+		m_amalthea.m_device->WaitIdle();
+		f_onCreateDevice(&m_amalthea);
+		m_amalthea.m_cmdQueue->WaitIdle();
+		m_amalthea.m_device->WaitIdle();
+	}
 
 	AmaltheaBehaviors::OnCreateSwapChain f_onCreateSwapChain = [&](Amalthea* amalthea)
 	{
@@ -666,6 +671,23 @@ public:
 
 	AmaltheaBehaviors::OnRender f_onRender = [&](Amalthea* amalthea, AmaltheaFrame& ctx, float time, float deltaTime)
 	{
+		if (!sceneLoaded)
+		{
+			EuropaClearValue clearValue[2];
+			clearValue[0].color = glm::vec4(0.0, 0.0, 0.0, 1.0);
+			clearValue[1].depthStencil = glm::vec2(1.0, 0.0);
+			ctx.cmdlist->BeginRenderpass(m_mainRenderPass, m_frameBuffers[ctx.frameIndex], glm::ivec2(0), glm::uvec2(amalthea->m_windowSize), 2, clearValue);
+			ctx.cmdlist->EndRenderpass();
+
+			ImGui::SetNextWindowPos(ImVec2(15, 15));
+			ImGui::Begin("", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove);
+			ImGui::Text("Loading scene %s", m_sceneFile.c_str());
+			ImGui::BufferingBar("Progress", m_bvhBuildProgress, ImVec2(250, 6), ImU32(0xFF202020), ImU32(0xFF2080A0));
+			ImGui::End();
+
+			return;
+		}
+
 		bool clear = false;
 
 		if (amalthea->m_ioSurface->IsKeyDown('W'))
@@ -877,6 +899,39 @@ public:
 
 		if (ImGui::Begin("Scene"))
 		{
+			const std::string scenes[] = { 
+				"../Models/CBbunny.ply",
+				"../Models/CBdragon.ply",
+				"../Models/CBmonkey.ply",
+				"../Models/minecraft.ply",
+				"../Models/cornellBox.ply",
+				"../Models/sponza.ply",
+				"../Models/conference.ply",
+				"../Models/livingRoom.ply",
+				"../Models/SanMiguel.ply"
+			};
+
+			static std::string current_item = m_sceneFile;
+
+			if (ImGui::BeginCombo("##combo", m_sceneFile.c_str())) // The second parameter is the label previewed before opening the combo.
+			{
+				for (int n = 0; n < IM_ARRAYSIZE(scenes); n++)
+				{
+					bool is_selected = (current_item.compare(scenes[n]) == 0); // You can store your selection however you want, outside or inside your objects
+					if (ImGui::Selectable(scenes[n].c_str(), is_selected))
+					{
+						m_sceneFile = scenes[n];
+						if (is_selected)
+							ImGui::SetItemDefaultFocus();
+						else
+							ReloadScene();
+					}
+				}
+				ImGui::EndCombo();
+			}
+
+			ImGui::Separator();
+
 			ImGui::DragFloat3("Position", &lights[0].pos.x);
 			ImGui::DragFloat3("Radiance", &lights[0].radiance.r, 0.5, 0.0);
 			ImGui::DragFloat3("Ambient Radiance", &m_ambientRadiance.x, 0.5, 0.0);
@@ -897,6 +952,19 @@ public:
 
 	~TestApp()
 	{
+		while (!writeBuffers.empty())
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+
+		terminate = true;
+
+		writeJobAvailable.notify_all();
+
+		for (auto& w : workers)
+		{
+			w.join();
+		}
 	}
 
 	TestApp(GanymedeECS& ecs, Europa& e, IoSurface::Ref s)
@@ -907,6 +975,12 @@ public:
 		ecs.RegisterHandler(m_amalthea.m_events.OnCreateSwapChain, &f_onCreateSwapChain);
 		ecs.RegisterHandler(m_amalthea.m_events.OnDestroySwapChain, &f_onDestroySwapChain);
 		ecs.RegisterHandler(m_amalthea.m_events.OnRender, &f_onRender);
+
+		terminate = false;
+		for (int i = 0; i < std::thread::hardware_concurrency(); i++)
+		{
+			workers.push_back(std::thread([&] { WriteWorker(); }));
+		}
 
 		m_amalthea.Run();
 	}
